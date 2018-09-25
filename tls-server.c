@@ -514,6 +514,43 @@ void read_cb_for_req(struct bufferevent *bev, void *arg) {
         bufferevent_enable(destbev, EV_READ | EV_WRITE);
         bufferevent_socket_connect(destbev, (struct sockaddr *)&destaddr, sizeof(destaddr));
 
+        /* enable tcp keepalive */
+        int on = 1;
+        if (setsockopt(bufferevent_getfd(destbev), SOL_SOCKET, SO_KEEPALIVE, &on, sizeof(on)) == -1) {
+            fprintf(stderr, "[%s] [WRN] setsockopt(SO_KEEPALIVE) for %s:%d: (%d) %s\n",
+                    current_time(curtime), inet_ntoa(destaddr.sin_addr), ntohs(destaddr.sin_port), errno, strerror(errno));
+        }
+
+        int idle = 30;
+        if (setsockopt(bufferevent_getfd(destbev), IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle)) == -1) {
+            fprintf(stderr, "[%s] [WRN] setsockopt(TCP_KEEPIDLE) for %s:%d: (%d) %s\n",
+                    current_time(curtime), inet_ntoa(destaddr.sin_addr), ntohs(destaddr.sin_port), errno, strerror(errno));
+        }
+
+        int intvl = 30;
+        if (setsockopt(bufferevent_getfd(destbev), IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl)) == -1) {
+            fprintf(stderr, "[%s] [WRN] setsockopt(TCP_KEEPINTVL) for %s:%d: (%d) %s\n",
+                    current_time(curtime), inet_ntoa(destaddr.sin_addr), ntohs(destaddr.sin_port), errno, strerror(errno));
+        }
+
+        int cnt = 2;
+        if (setsockopt(bufferevent_getfd(destbev), IPPROTO_TCP, TCP_KEEPCNT, &cnt, sizeof(cnt)) == -1) {
+            fprintf(stderr, "[%s] [WRN] setsockopt(TCP_KEEPCNT) for %s:%d: (%d) %s\n",
+                    current_time(curtime), inet_ntoa(destaddr.sin_addr), ntohs(destaddr.sin_port), errno, strerror(errno));
+        }
+
+        /* enable tcp nodelay */
+        if (setsockopt(bufferevent_getfd(destbev), IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on)) == -1) {
+            fprintf(stderr, "[%s] [WRN] setsockopt(TCP_NODELAY) for %s:%d: (%d) %s\n",
+                    current_time(curtime), inet_ntoa(destaddr.sin_addr), ntohs(destaddr.sin_port), errno, strerror(errno));
+        }
+
+        /* enable reuseaddr */
+        if (setsockopt(bufferevent_getfd(destbev), SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on)) == -1) {
+            fprintf(stderr, "[%s] [WRN] setsockopt(SO_REUSEADDR) for %s:%d: (%d) %s\n",
+                    current_time(curtime), inet_ntoa(destaddr.sin_addr), ntohs(destaddr.sin_port), errno, strerror(errno));
+        }
+
         // 设置当前 BEV 的相关回调
         struct tcp_cb_arg *clitarg = (struct tcp_cb_arg *)malloc(sizeof(struct tcp_cb_arg));
         clitarg -> type = TCP_ARG_TYPE_UNIX; clitarg -> bev = destbev;
@@ -591,31 +628,6 @@ void event_cb_for_tcp(struct bufferevent *bev, short events, void *arg) {
         printf("[%s] [INF] connected to target host %s:%d (client fd=%d)\n", current_time(curtime),
                inet_ntoa(destaddr.sin_addr), ntohs(destaddr.sin_port), bufferevent_getfd(tcparg->bev));
         bufferevent_write(tcparg->bev, WEBSOCKET_RESPONSE, strlen(WEBSOCKET_RESPONSE));
-
-        /* enable tcp keepalive */
-        int on = 1;
-        if (setsockopt(bufferevent_getfd(bev), SOL_SOCKET, SO_KEEPALIVE, &on, sizeof(on)) == -1) {
-            fprintf(stderr, "[%s] [WRN] setsockopt(SO_KEEPALIVE) for %s:%d: (%d) %s\n",
-                    current_time(curtime), inet_ntoa(destaddr.sin_addr), ntohs(destaddr.sin_port), errno, strerror(errno));
-        }
-
-        int idle = 30;
-        if (setsockopt(bufferevent_getfd(bev), IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle)) == -1) {
-            fprintf(stderr, "[%s] [WRN] setsockopt(TCP_KEEPIDLE) for %s:%d: (%d) %s\n",
-                    current_time(curtime), inet_ntoa(destaddr.sin_addr), ntohs(destaddr.sin_port), errno, strerror(errno));
-        }
-
-        int intvl = 30;
-        if (setsockopt(bufferevent_getfd(bev), IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl)) == -1) {
-            fprintf(stderr, "[%s] [WRN] setsockopt(TCP_KEEPINTVL) for %s:%d: (%d) %s\n",
-                    current_time(curtime), inet_ntoa(destaddr.sin_addr), ntohs(destaddr.sin_port), errno, strerror(errno));
-        }
-
-        int cnt = 2;
-        if (setsockopt(bufferevent_getfd(bev), IPPROTO_TCP, TCP_KEEPCNT, &cnt, sizeof(cnt)) == -1) {
-            fprintf(stderr, "[%s] [WRN] setsockopt(TCP_KEEPCNT) for %s:%d: (%d) %s\n",
-                    current_time(curtime), inet_ntoa(destaddr.sin_addr), ntohs(destaddr.sin_port), errno, strerror(errno));
-        }
 
         bufferevent_setcb(bev, read_cb_for_tcp, NULL, event_cb_for_tcp, arg);
 

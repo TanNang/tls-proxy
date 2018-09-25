@@ -32,6 +32,7 @@
 
 #define TUNNEL_ADDR "0.0.0.0"
 #define TUNNEL_PORT 60053
+
 #define TUNNEL_DEST_ADDR "8.8.8.8"
 #define TUNNEL_DEST_PORT 53
 
@@ -56,11 +57,14 @@
                                   " -v                      show version and exit\n"\
                                   " -h                      show this help and exit\n")
 
-#define UDP_PKT_BUFSIZ 1472
-#define UDP_ENC_BUFSIZ 2048
+static SSL_CTX *ctx = NULL;
+static char *servhost = NULL;
+static struct sockaddr_in servaddr;
 
-static int dns_sock = 0;
-static void *udp_buff = NULL;
+#define UDP_RAW_BUFSIZ 1472
+#define UDP_ENC_BUFSIZ 2048
+static int dnslsock = -1;
+static void *udprbuff = NULL;
 
 static int num_of_worker = 0;
 static size_t num_of_accept = -1;
@@ -109,8 +113,8 @@ void dns_event_cb(struct bufferevent *bev, short events, void *arg);
 
 int main(int argc, char *argv[]) {
     /* 选项默认值 */
-    char *servhost = NULL;
-    int   servport = 443;
+    // servhost = NULL;
+    int servport = 443;
 
     char *cafile = NULL;
     char *requri = NULL;
@@ -178,8 +182,7 @@ int main(int argc, char *argv[]) {
                     }
                     break;
                 }
-                char _tcpaddr[16] = {0};
-                tcpaddr = strncpy(_tcpaddr, optarg, ptr - optarg);
+                strncpy(tcpaddr, optarg, ptr - optarg);
                 char _tcpport[6] = {0};
                 strncpy(_tcpport, ptr + 1, optarg + strlen(optarg) - ptr);
                 tcpport = strtol(_tcpport, NULL, 10);
@@ -201,8 +204,7 @@ int main(int argc, char *argv[]) {
                     }
                     break;
                 }
-                char _udpaddr[16] = {0};
-                udpaddr = strncpy(_udpaddr, optarg, ptr - optarg);
+                strncpy(udpaddr, optarg, ptr - optarg);
                 char _udpport[6] = {0};
                 strncpy(_udpport, ptr + 1, optarg + strlen(optarg) - ptr);
                 udpport = strtol(_udpport, NULL, 10);
@@ -224,8 +226,7 @@ int main(int argc, char *argv[]) {
                     }
                     break;
                 }
-                char _dnsaddr[16] = {0};
-                dnsaddr = strncpy(_dnsaddr, optarg, ptr - optarg);
+                strncpy(dnsaddr, optarg, ptr - optarg);
                 char _dnsport[6] = {0};
                 strncpy(_dnsport, ptr + 1, optarg + strlen(optarg) - ptr);
                 dnsport = strtol(_dnsport, NULL, 10);
@@ -239,11 +240,10 @@ int main(int argc, char *argv[]) {
             case 'D': {
                 char *ptr = strchr(optarg, ':');
                 if (ptr == NULL) {
-                    rdnsaddr = optarg;
+                    strncpy(rdnsaddr, optarg, strlen(optarg));
                     break;
                 }
-                char _rdnsaddr[16] = {0};
-                rdnsaddr = strncpy(_rdnsaddr, optarg, ptr - optarg);
+                strncpy(rdnsaddr, optarg, ptr - optarg);
                 char _rdnsport[6] = {0};
                 strncpy(_rdnsport, ptr + 1, optarg + strlen(optarg) - ptr);
                 rdnsport = strtol(_rdnsport, NULL, 10);
@@ -274,6 +274,23 @@ int main(int argc, char *argv[]) {
                     return 1;
                 }
         }
+    }
+
+    /* 检查相关参数 */
+    if (servhost == NULL) {
+        fprintf(stderr, "missing option '-s'\n");
+        PRINT_COMMAND_HELP;
+        return 1;
+    }
+    if (cafile == NULL) {
+        fprintf(stderr, "missing option '-c'\n");
+        PRINT_COMMAND_HELP;
+        return 1;
+    }
+    if (requri == NULL) {
+        fprintf(stderr, "missing option '-P'\n");
+        PRINT_COMMAND_HELP;
+        return 1;
     }
 
     base_master = event_base_new();
@@ -354,26 +371,26 @@ int main(int argc, char *argv[]) {
     udpladdr.sin_addr.s_addr = inet_addr(udpaddr);
     udpladdr.sin_port = htons(udpport);
 
-    evutil_socket_t udp_sock = socket(AF_INET, SOCK_DGRAM, 0);
-    evutil_make_socket_nonblocking(udp_sock);
+    evutil_socket_t udplsock = socket(AF_INET, SOCK_DGRAM, 0);
+    evutil_make_socket_nonblocking(udplsock);
 
-    if (setsockopt(udp_sock, SOL_IP, IP_TRANSPARENT, &on, sizeof(on)) == -1) {
+    if (setsockopt(udplsock, SOL_IP, IP_TRANSPARENT, &on, sizeof(on)) == -1) {
         fprintf(stderr, "[%s] [WRN] setsockopt(IP_TRANSPARENT) for %s:%d: (%d) %s\n",
                 current_time(curtime), udpaddr, udpport, errno, strerror(errno));
     }
 
-    if (setsockopt(udp_sock, IPPROTO_IP, IP_RECVORIGDSTADDR, &on, sizeof(on)) == -1) {
+    if (setsockopt(udplsock, IPPROTO_IP, IP_RECVORIGDSTADDR, &on, sizeof(on)) == -1) {
         fprintf(stderr, "[%s] [WRN] setsockopt(IP_RECVORIGDSTADDR) for %s:%d: (%d) %s\n",
                 current_time(curtime), udpaddr, udpport, errno, strerror(errno));
     }
 
-    if (bind(udp_sock, (struct sockaddr *)&udpladdr, sizeof(udpladdr)) == -1) {
+    if (bind(udplsock, (struct sockaddr *)&udpladdr, sizeof(udpladdr)) == -1) {
         fprintf(stderr, "[%s] [ERR] can't listen udp socket %s:%d: (%d) %s\n", current_time(curtime), udpaddr, udpport, errno, strerror(errno));
         return errno;
     }
 
-    udp_buff = malloc(UDP_PKT_BUFSIZ);
-    struct event *ev = event_new(base_master, udp_sock, EV_READ | EV_PERSIST, udp_new_cb, NULL);
+    udprbuff = malloc(UDP_RAW_BUFSIZ);
+    struct event *ev = event_new(base_master, udplsock, EV_READ | EV_PERSIST, udp_new_cb, NULL);
     event_add(ev, NULL);
 
     /* dns proxy 监听器 */
@@ -383,15 +400,15 @@ int main(int argc, char *argv[]) {
     dnsladdr.sin_addr.s_addr = inet_addr(dnsaddr);
     dnsladdr.sin_port = htons(dnsport);
 
-    dns_sock = socket(AF_INET, SOCK_DGRAM, 0);
-    evutil_make_socket_nonblocking(dns_sock);
+    dnslsock = socket(AF_INET, SOCK_DGRAM, 0);
+    evutil_make_socket_nonblocking(dnslsock);
 
-    if (bind(dns_sock, (struct sockaddr *)&dnsladdr, sizeof(dnsladdr)) == -1) {
+    if (bind(dnslsock, (struct sockaddr *)&dnsladdr, sizeof(dnsladdr)) == -1) {
         fprintf(stderr, "[%s] [ERR] can't listen dns socket %s:%d: (%d) %s\n", current_time(curtime), dnsaddr, dnsport, errno, strerror(errno));
         return errno;
     }
 
-    ev = event_new(base_master, dns_sock, EV_READ | EV_PERSIST, dns_new_cb, NULL);
+    ev = event_new(base_master, dnslsock, EV_READ | EV_PERSIST, dns_new_cb, NULL);
     event_add(ev, NULL);
 
     /* start event loop */

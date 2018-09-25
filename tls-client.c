@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <pthread.h>
+#include <netdb.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -411,11 +412,36 @@ int main(int argc, char *argv[]) {
     ev = event_new(base_master, dnslsock, EV_READ | EV_PERSIST, dns_new_cb, NULL);
     event_add(ev, NULL);
 
+    /* ssl ctx init */
+    SSL_library_init();
+    SSL_load_error_strings();
+
+    ctx = SSL_CTX_new(TLS_client_method());
+
+    SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
+    SSL_CTX_set_verify_depth(ctx, 4);
+    SSL_CTX_load_verify_locations(ctx, cafile, NULL);
+    SSL_CTX_set_options(ctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1 | SSL_OP_NO_COMPRESSION);
+    SSL_CTX_set_cipher_list(ctx, "ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-CHACHA20-POLY1305");
+
+    /* 解析 servhost */
+    struct hostent *ent = gethostbyname(servhost);
+    if (ent == NULL) {
+        fprintf(stderr, "[%s] [ERR] can't resolve hostname: %s. (%d) %s\n", current_time(curtime), servhost, errno, strerror(errno));
+        return errno;
+    }
+    servaddr.sin_family = AF_INET;
+    memcpy(&servaddr.sin_addr, ent->h_addr_list[0], ent->h_length);
+    servaddr.sin_port = htons(servport);
+
     /* start event loop */
-    printf("[%s] [INF] number of worker thread: %d\n",    current_time(curtime), num_of_worker);
-    printf("[%s] [INF] listen tcp proxy socket: %s:%d\n", current_time(curtime), tcpaddr, tcpport);
-    printf("[%s] [INF] listen udp proxy socket: %s:%d\n", current_time(curtime), udpaddr, udpport);
-    printf("[%s] [INF] listen dns proxy socket: %s:%d\n", current_time(curtime), dnsaddr, dnsport);
+    printf("[%s] [INF] number of worker threads: %d\n",    current_time(curtime), num_of_worker);
+    printf("[%s] [INF] remote https server host: %s\n",    current_time(curtime), servhost);
+    printf("[%s] [INF] remote https server addr: %s:%d\n", current_time(curtime), inet_ntoa(servaddr.sin_addr), ntohs(servaddr.sin_port));
+    printf("[%s] [INF] listen tcp proxy address: %s:%d\n", current_time(curtime), tcpaddr, tcpport);
+    printf("[%s] [INF] listen udp proxy address: %s:%d\n", current_time(curtime), udpaddr, udpport);
+    printf("[%s] [INF] listen dns proxy address: %s:%d\n", current_time(curtime), dnsaddr, dnsport);
+    printf("[%s] [INF] remote dns resolver addr: %s:%d\n", current_time(curtime), rdnsaddr, rdnsport);
     event_base_dispatch(base_master);
 
     // TODO

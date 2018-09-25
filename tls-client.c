@@ -76,8 +76,10 @@ static struct sockaddr_in servaddr;
 
 #define UDP_RAW_BUFSIZ 1472
 #define UDP_ENC_BUFSIZ 2048
-static int dnslsock = -1;
 static void *udprbuff = NULL;
+static int   dnslsock = -1;
+static char  rdnsaddr[16] = TUNNEL_DEST_ADDR;
+static int   rdnsport     = TUNNEL_DEST_PORT;
 
 static char *req_sub = NULL;
 static int num_of_worker = 0;
@@ -123,7 +125,6 @@ void udp_read_cb(struct bufferevent *bev, void *arg);
 
 /* dns 相关回调 */
 void dns_new_cb(evutil_socket_t sock, short events, void *arg);
-void dns_conn_cb(struct bufferevent *bev, short events, void *arg);
 void dns_read_cb(struct bufferevent *bev, void *arg);
 
 int main(int argc, char *argv[]) {
@@ -140,9 +141,6 @@ int main(int argc, char *argv[]) {
 
     char  dnsaddr[16] = TUNNEL_ADDR;
     int   dnsport     = TUNNEL_PORT;
-
-    char  rdnsaddr[16] = TUNNEL_DEST_ADDR;
-    int   rdnsport     = TUNNEL_DEST_PORT;
 
     num_of_worker = get_nprocs();
 
@@ -787,18 +785,4 @@ void tcp_event_cb(struct bufferevent *bev, short events, void *arg) {
             free(dstarg);
         }
     }
-}
-
-/* udp 相关回调 */
-void udp_new_cb(evutil_socket_t sock, short events, void *arg) {
-    (void)sock;
-    (void)events;
-    (void)arg;
-}
-
-/* dns 相关回调 */
-void dns_new_cb(evutil_socket_t sock, short events, void *arg) {
-    (void)sock;
-    (void)events;
-    (void)arg;
 }

@@ -21,8 +21,8 @@
 #include <event2/thread.h>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
+#include <linux/netfilter_ipv4.h>
 #include "libbase64.h"
-#define gettid() syscall(__NR_gettid)
 
 #define REDIR_ADDR "0.0.0.0"
 #define REDIR_PORT 60080
@@ -56,7 +56,12 @@
                                   " -v                      show version and exit\n"\
                                   " -h                      show this help and exit\n")
 
+#define UDP_PKT_BUFSIZ 1472
+#define UDP_ENC_BUFSIZ 2048
+
 static int dns_sock = 0;
+static void *udp_buff = NULL;
+
 static int num_of_worker = 0;
 static size_t num_of_accept = -1;
 static struct event_base *base_master = NULL;
@@ -111,16 +116,17 @@ int main(int argc, char *argv[]) {
     char *requri = NULL;
     char *reqext = NULL;
 
-    char *tcpaddr = REDIR_ADDR;
-    int   tcpport = REDIR_PORT;
+    char  tcpaddr[16] = REDIR_ADDR;
+    int   tcpport     = REDIR_PORT;
 
-    char *udpaddr = TPROXY_ADDR;
-    int   udpport = TPROXY_PORT;
+    char  udpaddr[16] = TPROXY_ADDR;
+    int   udpport     = TPROXY_PORT;
 
-    char *dnsaddr = TUNNEL_ADDR;
-    int   dnsport = TUNNEL_PORT;
-    char *rdnsaddr = TUNNEL_DEST_ADDR;
-    int   rdnsport = TUNNEL_DEST_PORT;
+    char  dnsaddr[16] = TUNNEL_ADDR;
+    int   dnsport     = TUNNEL_PORT;
+
+    char  rdnsaddr[16] = TUNNEL_DEST_ADDR;
+    int   rdnsport     = TUNNEL_DEST_PORT;
 
     num_of_worker = get_nprocs();
 
@@ -173,10 +179,9 @@ int main(int argc, char *argv[]) {
                     break;
                 }
                 char _tcpaddr[16] = {0};
-                strncpy(_tcpaddr, optarg, ptr - optarg);
-                tcpaddr = _tcpaddr;
+                tcpaddr = strncpy(_tcpaddr, optarg, ptr - optarg);
                 char _tcpport[6] = {0};
-                strncpy(_tcpport, optarg, optarg + strlen(optarg) - ptr - 1);
+                strncpy(_tcpport, ptr + 1, optarg + strlen(optarg) - ptr);
                 tcpport = strtol(_tcpport, NULL, 10);
                 if (tcpport <= 0 || tcpport > 65535) {
                     fprintf(stderr, "invalid number of tcp listen port: %d\n", tcpport);
@@ -197,10 +202,9 @@ int main(int argc, char *argv[]) {
                     break;
                 }
                 char _udpaddr[16] = {0};
-                strncpy(_udpaddr, optarg, ptr - optarg);
-                udpaddr = _udpaddr;
+                udpaddr = strncpy(_udpaddr, optarg, ptr - optarg);
                 char _udpport[6] = {0};
-                strncpy(_udpport, optarg, optarg + strlen(optarg) - ptr - 1);
+                strncpy(_udpport, ptr + 1, optarg + strlen(optarg) - ptr);
                 udpport = strtol(_udpport, NULL, 10);
                 if (udpport <= 0 || udpport > 65535) {
                     fprintf(stderr, "invalid number of udp listen port: %d\n", udpport);
@@ -221,10 +225,9 @@ int main(int argc, char *argv[]) {
                     break;
                 }
                 char _dnsaddr[16] = {0};
-                strncpy(_dnsaddr, optarg, ptr - optarg);
-                dnsaddr = _dnsaddr;
+                dnsaddr = strncpy(_dnsaddr, optarg, ptr - optarg);
                 char _dnsport[6] = {0};
-                strncpy(_dnsport, optarg, optarg + strlen(optarg) - ptr - 1);
+                strncpy(_dnsport, ptr + 1, optarg + strlen(optarg) - ptr);
                 dnsport = strtol(_dnsport, NULL, 10);
                 if (dnsport <= 0 || dnsport > 65535) {
                     fprintf(stderr, "invalid number of dns listen port: %d\n", dnsport);
@@ -240,10 +243,9 @@ int main(int argc, char *argv[]) {
                     break;
                 }
                 char _rdnsaddr[16] = {0};
-                strncpy(_rdnsaddr, optarg, ptr - optarg);
-                rdnsaddr = _rdnsaddr;
+                rdnsaddr = strncpy(_rdnsaddr, optarg, ptr - optarg);
                 char _rdnsport[6] = {0};
-                strncpy(_rdnsport, optarg, optarg + strlen(optarg) - ptr - 1);
+                strncpy(_rdnsport, ptr + 1, optarg + strlen(optarg) - ptr);
                 rdnsport = strtol(_rdnsport, NULL, 10);
                 if (rdnsport <= 0 || rdnsport > 65535) {
                     fprintf(stderr, "invalid number of rdns server port: %d\n", rdnsport);
@@ -308,7 +310,42 @@ int main(int argc, char *argv[]) {
     }
     evconnlistener_set_error_cb(listener, tcp_err_cb);
 
-    // TODO
+    /* enable tcp keepalive */
+    int on = 1;
+    if (setsockopt(evconnlistener_get_fd(listener), SOL_SOCKET, SO_KEEPALIVE, &on, sizeof(on)) == -1) {
+        fprintf(stderr, "[%s] [WRN] setsockopt(SO_KEEPALIVE) for %s:%d: (%d) %s\n",
+                current_time(curtime), tcpaddr, tcpport, errno, strerror(errno));
+    }
+
+    int idle = 30;
+    if (setsockopt(evconnlistener_get_fd(listener), IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle)) == -1) {
+        fprintf(stderr, "[%s] [WRN] setsockopt(TCP_KEEPIDLE) for %s:%d: (%d) %s\n",
+                current_time(curtime), tcpaddr, tcpport, errno, strerror(errno));
+    }
+
+    int intvl = 30;
+    if (setsockopt(evconnlistener_get_fd(listener), IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl)) == -1) {
+        fprintf(stderr, "[%s] [WRN] setsockopt(TCP_KEEPINTVL) for %s:%d: (%d) %s\n",
+                current_time(curtime), tcpaddr, tcpport, errno, strerror(errno));
+    }
+
+    int cnt = 2;
+    if (setsockopt(evconnlistener_get_fd(listener), IPPROTO_TCP, TCP_KEEPCNT, &cnt, sizeof(cnt)) == -1) {
+        fprintf(stderr, "[%s] [WRN] setsockopt(TCP_KEEPCNT) for %s:%d: (%d) %s\n",
+                current_time(curtime), tcpaddr, tcpport, errno, strerror(errno));
+    }
+
+    /* enable tcp nodelay */
+    if (setsockopt(evconnlistener_get_fd(listener), IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on)) == -1) {
+        fprintf(stderr, "[%s] [WRN] setsockopt(TCP_NODELAY) for %s:%d: (%d) %s\n",
+                current_time(curtime), tcpaddr, tcpport, errno, strerror(errno));
+    }
+
+    /* enable reuseaddr */
+    if (setsockopt(evconnlistener_get_fd(listener), SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on)) == -1) {
+        fprintf(stderr, "[%s] [WRN] setsockopt(SO_REUSEADDR) for %s:%d: (%d) %s\n",
+                current_time(curtime), tcpaddr, tcpport, errno, strerror(errno));
+    }
 
     /* udp proxy 监听器 */
     struct sockaddr_in udpladdr;
@@ -317,9 +354,64 @@ int main(int argc, char *argv[]) {
     udpladdr.sin_addr.s_addr = inet_addr(udpaddr);
     udpladdr.sin_port = htons(udpport);
 
-    // TODO
+    evutil_socket_t udp_sock = socket(AF_INET, SOCK_DGRAM, 0);
+    evutil_make_socket_nonblocking(udp_sock);
+
+    if (setsockopt(udp_sock, SOL_IP, IP_TRANSPARENT, &on, sizeof(on)) == -1) {
+        fprintf(stderr, "[%s] [WRN] setsockopt(IP_TRANSPARENT) for %s:%d: (%d) %s\n",
+                current_time(curtime), udpaddr, udpport, errno, strerror(errno));
+    }
+
+    if (setsockopt(udp_sock, IPPROTO_IP, IP_RECVORIGDSTADDR, &on, sizeof(on)) == -1) {
+        fprintf(stderr, "[%s] [WRN] setsockopt(IP_RECVORIGDSTADDR) for %s:%d: (%d) %s\n",
+                current_time(curtime), udpaddr, udpport, errno, strerror(errno));
+    }
+
+    if (bind(udp_sock, (struct sockaddr *)&udpladdr, sizeof(udpladdr)) == -1) {
+        fprintf(stderr, "[%s] [ERR] can't listen udp socket %s:%d: (%d) %s\n", current_time(curtime), udpaddr, udpport, errno, strerror(errno));
+        return errno;
+    }
+
+    udp_buff = malloc(UDP_PKT_BUFSIZ);
+    struct event *ev = event_new(base_master, udp_sock, EV_READ | EV_PERSIST, udp_new_cb, NULL);
+    event_add(ev, NULL);
 
     /* dns proxy 监听器 */
+    struct sockaddr_in dnsladdr;
+    memset(&dnsladdr, 0, sizeof(dnsladdr));
+    dnsladdr.sin_family = AF_INET;
+    dnsladdr.sin_addr.s_addr = inet_addr(dnsaddr);
+    dnsladdr.sin_port = htons(dnsport);
+
+    dns_sock = socket(AF_INET, SOCK_DGRAM, 0);
+    evutil_make_socket_nonblocking(dns_sock);
+
+    if (bind(dns_sock, (struct sockaddr *)&dnsladdr, sizeof(dnsladdr)) == -1) {
+        fprintf(stderr, "[%s] [ERR] can't listen dns socket %s:%d: (%d) %s\n", current_time(curtime), dnsaddr, dnsport, errno, strerror(errno));
+        return errno;
+    }
+
+    ev = event_new(base_master, dns_sock, EV_READ | EV_PERSIST, dns_new_cb, NULL);
+    event_add(ev, NULL);
+
+    /* start event loop */
+    printf("[%s] [INF] number of worker thread: %d\n",    current_time(curtime), num_of_worker);
+    printf("[%s] [INF] listen tcp proxy socket: %s:%d\n", current_time(curtime), tcpaddr, tcpport);
+    printf("[%s] [INF] listen udp proxy socket: %s:%d\n", current_time(curtime), udpaddr, udpport);
+    printf("[%s] [INF] listen dns proxy socket: %s:%d\n", current_time(curtime), dnsaddr, dnsport);
+    event_base_dispatch(base_master);
+
+    // TODO
 
     return 0;
 }
+
+/* tcp 相关回调 */
+void tcp_new_cb(struct evconnlistener *listener, evutil_socket_t sock, struct sockaddr *addr, int addrlen, void *arg) {}
+void tcp_err_cb(struct evconnlistener *listener, void *arg) {}
+
+/* udp 相关回调 */
+void udp_new_cb(evutil_socket_t sock, short events, void *arg) {}
+
+/* dns 相关回调 */
+void dns_new_cb(evutil_socket_t sock, short events, void *arg) {}

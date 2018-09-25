@@ -21,7 +21,6 @@
 #include <event2/util.h>
 #include <event2/thread.h>
 #include "libbase64.h"
-#define gettid() syscall(__NR_gettid)
 
 #define DEFAULT_SOCK_PATH "/run/tls-server.sock"
 #define WEBSOCKET_RESPONSE "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"

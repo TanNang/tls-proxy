@@ -357,9 +357,9 @@ void read_cb_for_req(struct bufferevent *bev, void *arg) {
         }
 
         // 尝试解码 base64 数据
-        int datalen = 0;
+        size_t datalen = 0;
         void *udpdata = malloc(strlen(header_data));
-        if (base64_decode(header_data, strlen(header_data), udpdata, (size_t *)&datalen, 0) != 1) {
+        if (base64_decode(header_data, strlen(header_data), udpdata, &datalen, 0) != 1) {
             fprintf(stderr, "[%s] [ERR] DATA header format error (decode base64 str failed). fd=%d\n", current_time(curtime), bufferevent_getfd(bev));
             printf("[%s] [INF] closed client connection: %s@%d\n", current_time(curtime), sock_path, bufferevent_getfd(bev));
             bufferevent_free(bev);
@@ -367,7 +367,7 @@ void read_cb_for_req(struct bufferevent *bev, void *arg) {
             free(buf);
             return;
         }
-        printf("[%s] [INF] recv %d bytes udp data from %s@%d\n", current_time(curtime), datalen, sock_path, bufferevent_getfd(bev));
+        printf("[%s] [INF] recv %ld bytes udp data from %s@%d\n", current_time(curtime), datalen, sock_path, bufferevent_getfd(bev));
 
         // 目的主机的套接字地址
         struct sockaddr_in destaddr;
@@ -391,7 +391,7 @@ void read_cb_for_req(struct bufferevent *bev, void *arg) {
             free(buf);
             return;
         }
-        printf("[%s] [INF] send %d bytes udp data to %s:%d. fd: %s@%d\n", current_time(curtime), datalen,
+        printf("[%s] [INF] send %ld bytes udp data to %s:%d. fd: %s@%d\n", current_time(curtime), datalen,
                 inet_ntoa(destaddr.sin_addr), ntohs(destaddr.sin_port), sock_path, bufferevent_getfd(bev));
 
         // 将当前 BEV 的回调取消
@@ -593,10 +593,10 @@ void read_cb_for_udp(evutil_socket_t sock, short events, void *arg) {
     printf("[%s] [INF] recv %d bytes udp data from %s:%d. cfd: %s@%d\n", current_time(curtime), rawlen,
             inet_ntoa(peeraddr.sin_addr), ntohs(peeraddr.sin_port), sock_path, bufferevent_getfd(bev));
 
-    int enclen = 0;
+    size_t enclen = 0;
     int rl_dup = rawlen;
     char *encdata = (char *)malloc(UDP_BASE64_BUFSIZE);
-    base64_encode(rawdata, rawlen, encdata, (size_t *)&enclen, 0);
+    base64_encode(rawdata, rawlen, encdata, &enclen, 0);
 
     bufferevent_write(bev, WEBSOCKET_RESPONSE, strlen(WEBSOCKET_RESPONSE) - 2);
     bufferevent_write(bev, "ConnectionData: ", strlen("ConnectionData: "));

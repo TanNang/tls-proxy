@@ -323,7 +323,9 @@ int main(int argc, char *argv[]) {
     strcpy(req_sub + strlen(req_sub), "\r\n");
     strcpy(req_sub + strlen(req_sub), "Upgrade: websocket\r\n");
     strcpy(req_sub + strlen(req_sub), "Connection: Upgrade\r\n");
-    strcpy(req_sub + strlen(req_sub), reqext); // must end with '\r\n'
+    if (reqext != NULL) {
+        strcpy(req_sub + strlen(req_sub), reqext); // must end with '\r\n'
+    }
 
     /* 运行 worker 线程 */
     base_master = event_base_new();

@@ -133,6 +133,7 @@ void udp_read_cb(struct bufferevent *bev, void *arg);
 
 /* dns 相关回调 */
 void dns_new_cb(evutil_socket_t sock, short events, void *arg);
+void dns_conn_cb(struct bufferevent *bev, short events, void *arg);
 void dns_read_cb(struct bufferevent *bev, void *arg);
 
 int main(int argc, char *argv[]) {
@@ -1059,8 +1060,255 @@ void udp_read_cb(struct bufferevent *bev, void *arg) {
                 free(rawdata);
                 return;
             }
+            free(header);
         }
+        fprintf(stderr, "[%s] [ERR] UDP Data header not found in websocket response\n", current_time(curtime));
+        printf("[%s] [INF] closed server connection: %s:%d\n", current_time(curtime), servhost, servport);
+        printf("[%s] [INF] closed client connection: %s:%d\n", current_time(curtime), udparg->srcaddr, udparg->srcport);
+        SSL *ssl = bufferevent_openssl_get_ssl(bev);
+        SSL_set_shutdown(ssl, SSL_RECEIVED_SHUTDOWN);
+        SSL_shutdown(ssl);
+        bufferevent_free(bev);
+        free(udparg);
+        return;
     } else {
-        // TODO
+        fprintf(stderr, "[%s] [ERR] https server not return a udp websocket response\n", current_time(curtime));
+        printf("[%s] [INF] closed server connection: %s:%d\n", current_time(curtime), servhost, servport);
+        printf("[%s] [INF] closed client connection: %s:%d\n", current_time(curtime), udparg->srcaddr, udparg->srcport);
+        SSL *ssl = bufferevent_openssl_get_ssl(bev);
+        SSL_set_shutdown(ssl, SSL_RECEIVED_SHUTDOWN);
+        SSL_shutdown(ssl);
+        bufferevent_free(bev);
+        free(udparg);
+        return;
+    }
+}
+
+void dns_new_cb(evutil_socket_t sock, short events, void *arg) {
+    (void)sock;
+    (void)events;
+    (void)arg;
+
+    char curtime[20] = {0};
+
+    struct sockaddr_in connaddr;
+    socklen_t addrlen = sizeof(connaddr);
+
+    int len = recvfrom(sock, udprbuff, UDP_RAW_BUFSIZ, 0, (struct sockaddr *)&connaddr, &addrlen);
+    if (len == -1) {
+        fprintf(stderr, "[%s] [ERR] failed to recvmsg from dns socket: (%d) %s\n", current_time(curtime), errno, strerror(errno));
+        return;
+    }
+    printf("[%s] [INF] recv %d bytes dns data from %s:%d\n", current_time(curtime), len, inet_ntoa(connaddr.sin_addr), ntohs(connaddr.sin_port));
+
+    struct udp_cb_arg *udparg = (struct udp_cb_arg *)malloc(sizeof(struct udp_cb_arg));
+    memset(udparg, 0, sizeof(struct udp_cb_arg));
+    strcpy(udparg->srcaddr, inet_ntoa(connaddr.sin_addr));
+    strcpy(udparg->dstaddr, rdnsaddr);
+    udparg->srcport = ntohs(connaddr.sin_port);
+    udparg->dstport = rdnsport;
+    udparg->buffer = (char *)malloc(UDP_ENC_BUFSIZ);
+    size_t outlen = 0;
+    base64_encode(udprbuff, len, udparg->buffer, &outlen, 0);
+    (udparg->buffer)[outlen] = 0; // string end with \0 character
+
+    ++num_of_accept;
+
+    /* 平均分配新连接到每个工作线程 */
+    struct event_base *base = NULL;
+    for (int i = 0; i < num_of_worker; ++i) {
+        if (num_of_accept % num_of_worker == (size_t)i) {
+            base = base_workers[i];
+            break;
+        }
+    }
+
+    SSL *ssl = SSL_new(ctx);
+    SSL_set_tlsext_host_name(ssl, servhost);
+    X509_VERIFY_PARAM_set1_host(SSL_get0_param(ssl), servhost, 0);
+
+    struct bufferevent *bev = bufferevent_openssl_socket_new(base, -1, ssl, BUFFEREVENT_SSL_CONNECTING, BEV_OPT_CLOSE_ON_FREE);
+    bufferevent_setcb(bev, NULL, NULL, dns_conn_cb, udparg);
+    bufferevent_enable(bev, EV_READ | EV_WRITE);
+    printf("[%s] [INF] connecting to https server: %s:%d\n", current_time(curtime), servhost, servport);
+    bufferevent_socket_connect(bev, (struct sockaddr *)&servaddr, addrlen);
+
+    /* enable tcp keepalive */
+    int on = 1;
+    if (setsockopt(bufferevent_getfd(bev), SOL_SOCKET, SO_KEEPALIVE, &on, sizeof(on)) == -1) {
+        fprintf(stderr, "[%s] [WRN] setsockopt(SO_KEEPALIVE) for %s:%d: (%d) %s\n",
+                current_time(curtime), servhost, servport, errno, strerror(errno));
+    }
+
+    int idle = 30;
+    if (setsockopt(bufferevent_getfd(bev), IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle)) == -1) {
+        fprintf(stderr, "[%s] [WRN] setsockopt(TCP_KEEPIDLE) for %s:%d: (%d) %s\n",
+                current_time(curtime), servhost, servport, errno, strerror(errno));
+    }
+
+    int intvl = 30;
+    if (setsockopt(bufferevent_getfd(bev), IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl)) == -1) {
+        fprintf(stderr, "[%s] [WRN] setsockopt(TCP_KEEPINTVL) for %s:%d: (%d) %s\n",
+                current_time(curtime), servhost, servport, errno, strerror(errno));
+    }
+
+    int cnt = 2;
+    if (setsockopt(bufferevent_getfd(bev), IPPROTO_TCP, TCP_KEEPCNT, &cnt, sizeof(cnt)) == -1) {
+        fprintf(stderr, "[%s] [WRN] setsockopt(TCP_KEEPCNT) for %s:%d: (%d) %s\n",
+                current_time(curtime), servhost, servport, errno, strerror(errno));
+    }
+
+    /* enable tcp nodelay */
+    if (setsockopt(bufferevent_getfd(bev), IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on)) == -1) {
+        fprintf(stderr, "[%s] [WRN] setsockopt(TCP_NODELAY) for %s:%d: (%d) %s\n",
+                current_time(curtime), servhost, servport, errno, strerror(errno));
+    }
+
+    /* enable reuseaddr */
+    if (setsockopt(bufferevent_getfd(bev), SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on)) == -1) {
+        fprintf(stderr, "[%s] [WRN] setsockopt(SO_REUSEADDR) for %s:%d: (%d) %s\n",
+                current_time(curtime), servhost, servport, errno, strerror(errno));
+    }
+}
+
+void dns_conn_cb(struct bufferevent *bev, short events, void *arg) {
+    (void)bev;
+    (void)events;
+    (void)arg;
+
+    char curtime[20] = {0};
+    struct udp_cb_arg *udparg = (struct udp_cb_arg *)arg;
+
+    if (events & BEV_EVENT_CONNECTED) {
+        printf("[%s] [INF] connected to https server: %s:%d\n", current_time(curtime), servhost, servport);
+        printf("[%s] [INF] send udp websocket request to https server\n", current_time(curtime));
+
+        bufferevent_write(bev, req_sub, strlen(req_sub));
+        bufferevent_write(bev, "ConnectionType: udp; addr=", strlen("ConnectionType: udp; addr="));
+        bufferevent_write(bev, udparg->dstaddr, strlen(udparg->dstaddr));
+        bufferevent_write(bev, "; port=", strlen("; port="));
+        char portstr[6] = {0};
+        sprintf(portstr, "%d", udparg->dstport);
+        bufferevent_write(bev, portstr, strlen(portstr));
+        bufferevent_write(bev, "\r\nConnectionData: ", strlen("\r\nConnectionData: "));
+        bufferevent_write(bev, udparg->buffer, strlen(udparg->buffer));
+        bufferevent_write(bev, "\r\n\r\n", 4);
+
+        free(udparg->buffer);
+        udparg->buffer = NULL;
+        bufferevent_setcb(bev, dns_read_cb, NULL, dns_conn_cb, arg);
+        return;
+    }
+
+    if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR)) {
+        if (events & BEV_EVENT_ERROR) {
+            unsigned long sslerror = bufferevent_get_openssl_error(bev);
+            if (sslerror != 0) {
+                fprintf(stderr, "[%s] [ERR] https server tls/ssl error: %s\n", current_time(curtime), ERR_reason_error_string(sslerror));
+            } else {
+                fprintf(stderr, "[%s] [ERR] error occurred when request: (%d) %s\n", current_time(curtime), errno, strerror(errno));
+            }
+        }
+        printf("[%s] [INF] closed server connection: %s:%d\n", current_time(curtime), servhost, servport);
+        printf("[%s] [INF] closed client connection: %s:%d\n", current_time(curtime), udparg->srcaddr, udparg->srcport);
+        SSL *ssl = bufferevent_openssl_get_ssl(bev);
+        SSL_set_shutdown(ssl, SSL_RECEIVED_SHUTDOWN);
+        SSL_shutdown(ssl);
+        bufferevent_free(bev);
+        free(udparg->buffer);
+        free(udparg);
+    }
+}
+
+void dns_read_cb(struct bufferevent *bev, void *arg) {
+    (void)bev;
+    (void)arg;
+
+    char curtime[20] = {0};
+    struct udp_cb_arg *udparg = (struct udp_cb_arg *)arg;
+
+    struct evbuffer *input = bufferevent_get_input(bev);
+    char *statusline = evbuffer_readln(input, NULL, EVBUFFER_EOL_CRLF);
+
+    if (strcmp(statusline, WEBSOCKET_STATUS_LINE) == 0) {
+        free(statusline);
+        printf("[%s] [INF] recv udp websocket response from https server\n", current_time(curtime));
+        char *header = NULL;
+        while ((header = evbuffer_readln(input, NULL, EVBUFFER_EOL_CRLF)) != NULL) {
+            if (strstr(header, "ConnectionData: ") == header) {
+                char *encdata = header + strlen("ConnectionData: ");
+                int   enclen = strlen(encdata);
+                void *rawdata = malloc(UDP_RAW_BUFSIZ);
+                size_t rawlen = 0;
+                if (base64_decode(encdata, enclen, rawdata, &rawlen, 0) != 1) {
+                    fprintf(stderr, "[%s] [ERR] failed to decode base64 string for %s:%d\n", current_time(curtime), udparg->srcaddr, udparg->srcport);
+                    printf("[%s] [INF] closed server connection: %s:%d\n", current_time(curtime), servhost, servport);
+                    printf("[%s] [INF] closed client connection: %s:%d\n", current_time(curtime), udparg->srcaddr, udparg->srcport);
+                    SSL *ssl = bufferevent_openssl_get_ssl(bev);
+                    SSL_set_shutdown(ssl, SSL_RECEIVED_SHUTDOWN);
+                    SSL_shutdown(ssl);
+                    bufferevent_free(bev);
+                    free(udparg);
+                    free(header);
+                    free(rawdata);
+                    return;
+                }
+                printf("[%s] [INF] recv %ld bytes udp data from %s:%d\n", current_time(curtime), rawlen, udparg->dstaddr, udparg->dstport);
+
+                int respsock = dnslsock;
+
+                struct sockaddr_in connaddr;
+                memset(&connaddr, 0, sizeof(connaddr));
+                connaddr.sin_family = AF_INET;
+                connaddr.sin_addr.s_addr = inet_addr(udparg->srcaddr);
+                connaddr.sin_port = htons(udparg->srcport);
+
+                if (sendto(respsock, rawdata, rawlen, 0, (struct sockaddr *)&connaddr, sizeof(connaddr)) == -1) {
+                    fprintf(stderr, "[%s] [ERR] failed to send udp data to %s:%d: (%d) %s\n", current_time(curtime), udparg->srcaddr, udparg->srcport, errno, strerror(errno));
+                    printf("[%s] [INF] closed server connection: %s:%d\n", current_time(curtime), servhost, servport);
+                    printf("[%s] [INF] closed client connection: %s:%d\n", current_time(curtime), udparg->srcaddr, udparg->srcport);
+                    SSL *ssl = bufferevent_openssl_get_ssl(bev);
+                    SSL_set_shutdown(ssl, SSL_RECEIVED_SHUTDOWN);
+                    SSL_shutdown(ssl);
+                    bufferevent_free(bev);
+                    free(udparg);
+                    free(header);
+                    free(rawdata);
+                    return;
+                }
+                printf("[%s] [INF] send %ld bytes udp data to %s:%d\n", current_time(curtime), rawlen, udparg->srcaddr, udparg->srcport);
+
+                printf("[%s] [INF] closed server connection: %s:%d\n", current_time(curtime), servhost, servport);
+                printf("[%s] [INF] closed client connection: %s:%d\n", current_time(curtime), udparg->srcaddr, udparg->srcport);
+                SSL *ssl = bufferevent_openssl_get_ssl(bev);
+                SSL_set_shutdown(ssl, SSL_RECEIVED_SHUTDOWN);
+                SSL_shutdown(ssl);
+                bufferevent_free(bev);
+                free(udparg);
+                free(header);
+                free(rawdata);
+                return;
+            }
+            free(header);
+        }
+        fprintf(stderr, "[%s] [ERR] UDP Data header not found in websocket response\n", current_time(curtime));
+        printf("[%s] [INF] closed server connection: %s:%d\n", current_time(curtime), servhost, servport);
+        printf("[%s] [INF] closed client connection: %s:%d\n", current_time(curtime), udparg->srcaddr, udparg->srcport);
+        SSL *ssl = bufferevent_openssl_get_ssl(bev);
+        SSL_set_shutdown(ssl, SSL_RECEIVED_SHUTDOWN);
+        SSL_shutdown(ssl);
+        bufferevent_free(bev);
+        free(udparg);
+        return;
+    } else {
+        fprintf(stderr, "[%s] [ERR] https server not return a udp websocket response\n", current_time(curtime));
+        printf("[%s] [INF] closed server connection: %s:%d\n", current_time(curtime), servhost, servport);
+        printf("[%s] [INF] closed client connection: %s:%d\n", current_time(curtime), udparg->srcaddr, udparg->srcport);
+        SSL *ssl = bufferevent_openssl_get_ssl(bev);
+        SSL_set_shutdown(ssl, SSL_RECEIVED_SHUTDOWN);
+        SSL_shutdown(ssl);
+        bufferevent_free(bev);
+        free(udparg);
+        return;
     }
 }

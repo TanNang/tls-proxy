@@ -589,7 +589,7 @@ void udp_rcvres_cb(int sock, short events, void *arg) {
 
     struct sockaddr_in clntaddr;
     getpeername(bufferevent_getfd(udparg->bev), (struct sockaddr *)&clntaddr, &addrlen);
-    printf("[%s] [INF] send %d bytes to %s:%d\n", curtime(ctime), rawlen, inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
+    printf("[%s] [INF] send %d bytes data to %s:%d\n", curtime(ctime), rawlen, inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
 
     close(sock);
     event_free(udparg->ev);

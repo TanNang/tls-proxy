@@ -1,107 +1,122 @@
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 #include <unistd.h>
-#include <signal.h>
 #include <errno.h>
 #include <pthread.h>
-#include <sys/un.h>
-#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/syscall.h>
 #include <sys/sysinfo.h>
-#include <netinet/tcp.h>
 #include <arpa/inet.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <event2/event.h>
 #include <event2/listener.h>
 #include <event2/bufferevent.h>
 #include <event2/buffer.h>
 #include <event2/util.h>
-#include <event2/thread.h>
 #include "libbase64.h"
 
-#define DEFAULT_SOCK_PATH "/run/tls-server.sock"
+#define PRINT_COMMAND_HELP \
+    printf("usage: tls-server <OPTIONS>. OPTIONS have these:\n"\
+           " -b <listen_addr>       listen addr. default: 127.0.0.1\n"\
+           " -l <listen_port>       listen port. default: 60080\n"\
+           " -j <thread_nums>       thread nums. default: num of CPU\n"\
+           " -v                     show current version and exit\n"\
+           " -h                     show current message and exit\n")
+
 #define WEBSOCKET_RESPONSE "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
 
-#define PRINT_COMMAND_HELP printf("usage: tls-server [-b sock_path] [-j worker_num] [-v] [-h]\n"\
-                                  " -b <sock_path>         unix domain socket path. default: "DEFAULT_SOCK_PATH"\n"\
-                                  " -j <worker_num>        number of worker threads. default: 0 (number of CPUs)\n"\
-                                  " -v                     show version and exit.\n"\
-                                  " -h                     show this help and exit.\n")
-
-#define UDP_PACKET_BUFSIZE 1472
-#define UDP_BASE64_BUFSIZE 2048
-
-#define TCP_ARG_TYPE_INET 0
-#define TCP_ARG_TYPE_UNIX 1
-struct tcp_cb_arg {
-    char type; // INET|UNIX
+#define UDP_RAW_BUFSIZ 1472
+#define UDP_ENC_BUFSIZ 1960
+struct udp_arg {
+    struct event *ev;
     struct bufferevent *bev;
 };
 
-static int num_of_worker = 0;
-static char *sock_path = NULL;
-static size_t num_of_accept = -1;
-static struct event_base *base_master = NULL;
-static struct event_base **base_workers = NULL; // 指针数组
+// server listen addr
+static struct sockaddr_in servaddr;
 
-void signal_handler(int signum) {
-    (void)signum;
-    unlink(sock_path);
-    exit(0);
-}
+// worker thread func
+void *service(void *arg);
 
-void *worker_thread_func(void *arg) {
-    struct event_base *base = (struct event_base *)arg;
-    event_base_loop(base, EVLOOP_NO_EXIT_ON_EMPTY);
-    event_base_free(base);
-    return NULL;
-}
+// [new connect] accept callback
+void new_accept_cb(struct evconnlistener *listener, int sock, struct sockaddr *addr, int addrlen, void *arg);
+// [new connect] 1streq callback
+void new_1streq_cb(struct bufferevent *bev, void *arg);
+// [new connect] events callback
+void new_events_cb(struct bufferevent *bev, short events, void *arg);
 
-// sizeof(output) >= 20
-char *current_time(char *output) {
+// [tcp request] datfwd callback
+void tcp_datfwd_cb(struct bufferevent *bev, void *arg);
+// [tcp request] events callback
+void tcp_events_cb(struct bufferevent *bev, short events, void *arg);
+
+// [udp request] rcvres callback
+void udp_rcvres_cb(int sock, short events, void *arg);
+// [udp request] events callback
+void udp_events_cb(struct bufferevent *bev, short events, void *arg);
+
+// sizeof(ctime) = 20
+char *curtime(char *ctime) {
     time_t rawtime;
     time(&rawtime);
 
-    struct tm *result = (struct tm *)malloc(sizeof(struct tm));
-    localtime_r(&rawtime, result);
+    struct tm curtm;
+    localtime_r(&rawtime, &curtm);
 
-    sprintf(output, "%04d-%02d-%02d %02d:%02d:%02d",
-            result->tm_year + 1900, result->tm_mon + 1, result->tm_mday,
-            result->tm_hour,        result->tm_min,     result->tm_sec);
+    sprintf(ctime, "%04d-%02d-%02d %02d:%02d:%02d",
+            curtm.tm_year + 1900, curtm.tm_mon + 1, curtm.tm_mday,
+            curtm.tm_hour,        curtm.tm_min,     curtm.tm_sec);
 
-    free(result);
-    return output;
+    return ctime;
 }
 
-/* 处理新连接相关的回调 */
-void accept_conn_cb(struct evconnlistener *listener, evutil_socket_t sock, struct sockaddr *addr, int addrlen, void *arg);
-void accept_error_cb(struct evconnlistener *listener, void *arg);
+void set_tcp_sockopt(int sock) {
+    char ctime[20] = {0};
+    char error[64] = {0};
 
-// 处理 websocket 请求的 read 回调
-void read_cb_for_req(struct bufferevent *bev, void *arg);
-// 处理 websocket 请求的 event 回调
-void event_cb_for_req(struct bufferevent *bev, short events, void *arg);
+    int optval = 1;
+    if (setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &optval, sizeof(optval)) == -1) {
+        printf("[%s] [WRN] setsockopt(TCP_NODELAY): (%d) %s\n", curtime(ctime), errno, strerror_r(errno, error, 64));
+    }
 
-// 处理 type='tcp' 请求的 read 回调
-void read_cb_for_tcp(struct bufferevent *bev, void *arg);
-// 处理 type='tcp' 请求的 event 回调
-void event_cb_for_tcp(struct bufferevent *bev, short events, void *arg);
+    if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval)) == -1) {
+        printf("[%s] [WRN] setsockopt(SO_REUSEADDR): (%d) %s\n", curtime(ctime), errno, strerror_r(errno, error, 64));
+    }
 
-// 处理 type='udp' 请求的 read 回调
-void read_cb_for_udp(evutil_socket_t sock, short events, void *arg);
+    if (setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, &optval, sizeof(optval)) == -1) {
+        printf("[%s] [WRN] setsockopt(SO_KEEPALIVE): (%d) %s\n", curtime(ctime), errno, strerror_r(errno, error, 64));
+    }
+
+    optval = 30;
+    if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPIDLE, &optval, sizeof(optval)) == -1) {
+        printf("[%s] [WRN] setsockopt(TCP_KEEPIDLE): (%d) %s\n", curtime(ctime), errno, strerror_r(errno, error, 64));
+    }
+
+    if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPINTVL, &optval, sizeof(optval)) == -1) {
+        printf("[%s] [WRN] setsockopt(TCP_KEEPINTVL): (%d) %s\n", curtime(ctime), errno, strerror_r(errno, error, 64));
+    }
+
+    optval = 3;
+    if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPCNT, &optval, sizeof(optval)) == -1) {
+        printf("[%s] [WRN] setsockopt(TCP_KEEPCNT): (%d) %s\n", curtime(ctime), errno, strerror_r(errno, error, 64));
+    }
+}
 
 int main(int argc, char *argv[]) {
-    /* 选项默认值 */
-    sock_path = DEFAULT_SOCK_PATH;
-    num_of_worker = get_nprocs(); // CPU 个数
+    // options default value
+    char *listen_addr = "127.0.0.1";
+    int   listen_port = 60080;
+    int   thread_nums = get_nprocs();
 
-    /* 解析命令行 */
-    opterr = 0; // 自定义错误信息
-    char *optstr = "b:j:vh";
-    int opt;
+    // parse command arguments
+    opterr = 0;
+    char *optstr = "b:l:j:vh";
+    int opt = -1;
     while ((opt = getopt(argc, argv, optstr)) != -1) {
         switch (opt) {
             case 'v':
@@ -111,565 +126,491 @@ int main(int argc, char *argv[]) {
                 PRINT_COMMAND_HELP;
                 return 0;
             case 'b':
-                sock_path = optarg;
+                listen_addr = optarg;
                 break;
-            case 'j':
-                num_of_worker = strtol(optarg, NULL, 10);
-                if (num_of_worker < 0) {
-                    fprintf(stderr, "invalid number of worker threads: %d\n", num_of_worker);
+            case 'l':
+                listen_port = strtol(optarg, NULL, 10);
+                if (listen_port <= 0 || listen_port > 65535) {
+                    printf("invalid listen port: %d\n", listen_port);
                     PRINT_COMMAND_HELP;
                     return 1;
                 }
-                if (num_of_worker == 0) num_of_worker = get_nprocs();
+                break;
+            case 'j':
+                thread_nums = strtol(optarg, NULL, 10);
+                if (thread_nums <= 0) {
+                    printf("invalid thread nums: %d\n", thread_nums);
+                    PRINT_COMMAND_HELP;
+                    return 1;
+                }
                 break;
             case '?':
                 if (strchr(optstr, optopt) == NULL) {
-                    fprintf(stderr, "unknown option '-%c'\n", optopt);
+                    printf("unknown option '-%c'\n", optopt);
                     PRINT_COMMAND_HELP;
                     return 1;
                 } else {
-                    fprintf(stderr, "missing optval '-%c'\n", optopt);
+                    printf("missing optval '-%c'\n", optopt);
                     PRINT_COMMAND_HELP;
                     return 1;
                 }
         }
     }
 
-    base_master = event_base_new();
+    servaddr.sin_family = AF_INET;
+    inet_aton(listen_addr, &servaddr.sin_addr);
+    servaddr.sin_port = htons(listen_port);
 
-    evthread_use_pthreads(); // 告诉 libevent 库以下的 event_base 需要线程安全
-    base_workers = (struct event_base **)malloc(sizeof(void *) * num_of_worker);
-    pthread_t *tids = (pthread_t *)malloc(sizeof(pthread_t) * num_of_worker);
+    char ctime[20] = {0};
+    printf("[%s] [INF] thread numbers: %d\n", curtime(ctime), thread_nums);
+    printf("[%s] [INF] listen address: %s:%d\n", curtime(ctime), listen_addr, listen_port);
 
-    char curtime[20] = {0};
-
-    for (int i = 0; i < num_of_worker; ++i) {
-        base_workers[i] = event_base_new();
-        if (pthread_create(tids + i, NULL, worker_thread_func, base_workers[i]) != 0) {
-            fprintf(stderr, "[%s] [ERR] can't create worker thread: (%d) %s\n", current_time(curtime), errno, strerror(errno));
-            return errno;
+    pthread_t tid = 0;
+    char error[64] = {0};
+    for (int i = 0; i < thread_nums; ++i) {
+        if (pthread_create(&tid, NULL, service, NULL) != 0) {
+            printf("[%s] [ERR] create thread: (%d) (%s)\n", curtime(ctime), errno, strerror_r(errno, error, 64));
+            return 1;
         }
     }
-
-    signal(SIGHUP,  signal_handler);
-    signal(SIGINT,  signal_handler);
-    signal(SIGQUIT, signal_handler);
-    signal(SIGTERM, signal_handler);
-
-    struct sockaddr_un servaddr;
-    memset(&servaddr, 0, sizeof(servaddr));
-    servaddr.sun_family = AF_UNIX;
-    strcpy(servaddr.sun_path, sock_path);
-
-    unlink(sock_path); // 如果文件已存在则先删除
-    struct evconnlistener *listener = evconnlistener_new_bind(
-            base_master, accept_conn_cb, NULL,
-            LEV_OPT_CLOSE_ON_FREE | LEV_OPT_REUSEABLE,
-            -1, (struct sockaddr *)&servaddr, sizeof(servaddr)
-    );
-    if (listener == NULL) {
-        fprintf(stderr, "[%s] [ERR] can't listen socket %s: (%d) %s\n", current_time(curtime), sock_path, errno, strerror(errno));
-        return errno;
-    }
-    evconnlistener_set_error_cb(listener, accept_error_cb);
-    chmod(sock_path, 00600); // 设置文件权限 rw- --- ---
-
-    printf("[%s] [INF] listen socket: %s. number of workers: %d\n", current_time(curtime), sock_path, num_of_worker);
-    event_base_dispatch(base_master);
-
-    for (int i = 0; i < num_of_worker; ++i) {
-        event_base_loopexit(base_workers[i], NULL);
-        pthread_join(tids[i], NULL);
-    }
-    free(tids);
-    free(base_workers);
-
-    evconnlistener_free(listener);
-    event_base_free(base_master);
-    unlink(sock_path);
+    pthread_exit(NULL);
 
     return 0;
 }
 
-void accept_conn_cb(struct evconnlistener *listener, evutil_socket_t sock, struct sockaddr *addr, int addrlen, void *arg) {
-    (void)listener;
-    (void)addr;
-    (void)addrlen;
-    (void)arg;
+void *service(void *arg) {
+    (void) arg;
+    char ctime[20] = {0};
+    char error[64] = {0};
 
-    ++num_of_accept; // 0, 1, 2, 3 ...
-    char curtime[20] = {0};
-    printf("[%s] [INF] accepted new connection: %s@%d\n", current_time(curtime), sock_path, sock);
+    struct event_config *cfg = event_config_new();
+    event_config_set_flag(cfg, EVENT_BASE_FLAG_NOLOCK | EVENT_BASE_FLAG_IGNORE_ENV);
+    struct event_base *base = event_base_new_with_config(cfg);
+    event_config_free(cfg);
 
-    /* 平均分配新连接到每个工作线程 */
-    struct event_base *base = NULL;
-    for (int i = 0; i < num_of_worker; ++i) {
-        if (num_of_accept % num_of_worker == (size_t)i) {
-            base = base_workers[i];
-            break;
-        }
+    struct evconnlistener *listener = evconnlistener_new_bind(
+            base, new_accept_cb, NULL,
+            LEV_OPT_CLOSE_ON_FREE | LEV_OPT_REUSEABLE | LEV_OPT_REUSEABLE_PORT,
+            SOMAXCONN, (struct sockaddr *)&servaddr, sizeof(struct sockaddr_in)
+    );
+    if (listener == NULL) {
+        printf("[%s] [ERR] listen socket: (%d) %s\n", curtime(ctime), errno, strerror_r(errno, error, 64));
+        exit(1);
     }
+    event_base_dispatch(base);
 
-    struct bufferevent *bev = bufferevent_socket_new(base, sock, BEV_OPT_CLOSE_ON_FREE);
-    bufferevent_setcb(bev, read_cb_for_req, NULL, event_cb_for_req, NULL);
-    bufferevent_enable(bev, EV_READ | EV_WRITE);
+    evconnlistener_free(listener);
+    event_base_free(base);
+    libevent_global_shutdown();
+
+    return NULL;
 }
 
-void accept_error_cb(struct evconnlistener *listener, void *arg) {
-    (void)listener;
-    (void)arg;
-    char curtime[20] = {0};
-    char *error_string = evutil_socket_error_to_string(EVUTIL_SOCKET_ERROR());
-    fprintf(stderr, "[%s] [ERR] error occurred when accepting: %s\n", current_time(curtime), error_string);
-    event_base_loopexit(base_master, NULL);
+void new_accept_cb(struct evconnlistener *listener, int sock, struct sockaddr *addr, int addrlen, void *arg) {
+    (void) listener;
+    (void) sock;
+    (void) addr;
+    (void) addrlen;
+    (void) arg;
+
+    char ctime[20] = {0};
+    set_tcp_sockopt(sock);
+    struct sockaddr_in *clntaddr = (struct sockaddr_in *)addr;
+    printf("[%s] [INF] new connect: %s:%d\n", curtime(ctime), inet_ntoa(clntaddr->sin_addr), ntohs(clntaddr->sin_port));
+
+    struct bufferevent *clntbev = bufferevent_socket_new(evconnlistener_get_base(listener), sock, BEV_OPT_CLOSE_ON_FREE);
+    bufferevent_setcb(clntbev, new_1streq_cb, NULL, new_events_cb, NULL);
+    bufferevent_enable(clntbev, EV_READ | EV_WRITE);
 }
 
-void event_cb_for_req(struct bufferevent *bev, short events, void *arg) {
-    (void)arg;
-    char curtime[20] = {0};
+void new_events_cb(struct bufferevent *bev, short events, void *arg) {
+    (void) bev;
+    (void) events;
+    (void) arg;
+    char ctime[20] = {0};
+    char error[64] = {0};
+
+    struct sockaddr_in clntaddr;
+    socklen_t addrlen = sizeof(clntaddr);
+    getpeername(bufferevent_getfd(bev), (struct sockaddr *)&clntaddr, &addrlen);
+
     if (events & BEV_EVENT_ERROR) {
-        fprintf(stderr, "[%s] [ERR] error occurred when processing: fd=%d (%d) %s\n",
-                current_time(curtime), bufferevent_getfd(bev), errno, strerror(errno));
+        printf("[%s] [ERR] error of %s:%d: (%d) %s\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port), errno, strerror_r(errno, error, 64));
     }
+
     if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR)) {
-        printf("[%s] [INF] closed client connection: %s@%d\n", current_time(curtime), sock_path, bufferevent_getfd(bev));
+        printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
         bufferevent_free(bev);
     }
 }
 
-void read_cb_for_req(struct bufferevent *bev, void *arg) {
-    (void)arg;
+void new_1streq_cb(struct bufferevent *bev, void *arg) {
+    (void) bev;
+    (void) arg;
+    char ctime[20] = {0};
+
+    struct sockaddr_in clntaddr;
+    socklen_t addrlen = sizeof(clntaddr);
+    getpeername(bufferevent_getfd(bev), (struct sockaddr *)&clntaddr, &addrlen);
 
     struct evbuffer *input = bufferevent_get_input(bev);
-    int len = evbuffer_get_length(input);
-    char *buf = (char *)malloc(len + 1);
-    bufferevent_read(bev, buf, len);
-    buf[len] = 0; // string end with \0 character
+    char *reqline = evbuffer_readln(input, NULL, EVBUFFER_EOL_CRLF);
 
-    char curtime[20] = {0};
-
-    /* websocket 请求头部格式 [tcp] */
-    // value_min_len(25): ConnectionType: tcp; addr=1.2.3.4; port=1
-    // value_max_len(37): ConnectionType: tcp; addr=111.111.111.111; port=55555
-
-    /* websocket 请求头部格式 [udp] */
-    // value_min_len(25): ConnectionType: udp; addr=1.2.3.4; port=1
-    // value_max_len(37): ConnectionType: udp; addr=111.111.111.111; port=55555
-    //                    ConnectionData: <base64_encoded_string>
-
-    // 查找 Type 头部
-    char *header_type = strstr(buf, "\r\nConnectionType: ");
-    // 查找 Data 头部
-    char *header_data = strstr(buf, "\r\nConnectionData: ");
-
-    // UDP 代理
-    if (header_type != NULL && header_data != NULL) {
-        header_type += strlen("\r\nConnectionType: ");       // beg_ptr
-        header_data += strlen("\r\nConnectionData: ");       // beg_ptr
-        char *header_type_end = strstr(header_type, "\r\n"); // end_ptr
-        char *header_data_end = strstr(header_data, "\r\n"); // end_ptr
-
-        // 如果没有找到 \r\n 结束字符 (通常不会)
-        if (header_type_end == NULL || header_data_end == NULL) {
-            fprintf(stderr, "[%s] [ERR] TYPE header or DATA header not end with '\\r\\n'. fd=%d\n", current_time(curtime), bufferevent_getfd(bev));
-            printf("[%s] [INF] closed client connection: %s@%d\n", current_time(curtime), sock_path, bufferevent_getfd(bev));
-            bufferevent_free(bev);
-            free(buf);
-            return;
-        }
-
-        // 在 end_ptr 处写入 '\0' 结束字符
-        *header_type_end = 0;
-        *header_data_end = 0;
-
-        // 如果字符串长度不符合预设情况
-        if (strlen(header_type) < 25 || strlen(header_type) > 37 || strlen(header_data) < 1) {
-            fprintf(stderr, "[%s] [ERR] TYPE header or DATA header length is incorrect. fd=%d\n", current_time(curtime), bufferevent_getfd(bev));
-            printf("[%s] [INF] closed client connection: %s@%d\n", current_time(curtime), sock_path, bufferevent_getfd(bev));
-            bufferevent_free(bev);
-            free(buf);
-            return;
-        }
-
-        // 存储 'tcp' or 'udp' 的数组
-        char type[4] = {0};
-        strncpy(type, header_type, 3);
-
-        // 如果 type != 'udp'
-        if (strcmp(type, "udp") != 0) {
-            fprintf(stderr, "[%s] [ERR] TYPE header format error ('type' not equals 'udp'). fd=%d\n", current_time(curtime), bufferevent_getfd(bev));
-            printf("[%s] [INF] closed client connection: %s@%d\n", current_time(curtime), sock_path, bufferevent_getfd(bev));
-            bufferevent_free(bev);
-            free(buf);
-            return;
-        }
-
-        // 查找 'addr=' 子字符串
-        char *addr_str = strstr(header_type, "udp; addr=");
-
-        // 如果没有找到 'addr=' 子串
-        if (addr_str != header_type) {
-            fprintf(stderr, "[%s] [ERR] TYPE header format error (param 'addr' not found). fd=%d\n", current_time(curtime), bufferevent_getfd(bev));
-            printf("[%s] [INF] closed client connection: %s@%d\n", current_time(curtime), sock_path, bufferevent_getfd(bev));
-            bufferevent_free(bev);
-            free(buf);
-            return;
-        }
-
-        // 找到后将 addr_str 移至 IP 地址开头处
-        addr_str += strlen("udp; addr=");
-
-        // 查找 'port=' 子字符串
-        char *port_str = strstr(addr_str, "; port=");
-
-        // 如果没有找到 'port=' 子串
-        if (port_str == NULL) {
-            fprintf(stderr, "[%s] [ERR] TYPE header format error (param 'port' not found). fd=%d\n", current_time(curtime), bufferevent_getfd(bev));
-            printf("[%s] [INF] closed client connection: %s@%d\n", current_time(curtime), sock_path, bufferevent_getfd(bev));
-            bufferevent_free(bev);
-            free(buf);
-            return;
-        }
-
-        // 找到后在 port_str 处写入 \0 字符
-        *port_str = 0;
-        // 然后将 port_str 移至 Port 开头处
-        port_str += strlen("; port=");
-
-        // 尝试解析 IP 地址
-        unsigned long addr = inet_addr(addr_str);
-        if (addr == INADDR_NONE) {
-            fprintf(stderr, "[%s] [ERR] TYPE header format error (param 'addr' format error). fd=%d\n", current_time(curtime), bufferevent_getfd(bev));
-            printf("[%s] [INF] closed client connection: %s@%d\n", current_time(curtime), sock_path, bufferevent_getfd(bev));
-            bufferevent_free(bev);
-            free(buf);
-            return;
-        }
-
-        // 尝试解析 Port 端口
-        unsigned short port = htons((int)strtol(port_str, NULL, 10));
-        if (port == 0) {
-            fprintf(stderr, "[%s] [ERR] TYPE header format error (param 'port' format error). fd=%d\n", current_time(curtime), bufferevent_getfd(bev));
-            printf("[%s] [INF] closed client connection: %s@%d\n", current_time(curtime), sock_path, bufferevent_getfd(bev));
-            bufferevent_free(bev);
-            free(buf);
-            return;
-        }
-
-        // 尝试解码 base64 数据
-        size_t datalen = 0;
-        void *udpdata = malloc(strlen(header_data));
-        if (base64_decode(header_data, strlen(header_data), udpdata, &datalen, 0) != 1) {
-            fprintf(stderr, "[%s] [ERR] DATA header format error (decode base64 str failed). fd=%d\n", current_time(curtime), bufferevent_getfd(bev));
-            printf("[%s] [INF] closed client connection: %s@%d\n", current_time(curtime), sock_path, bufferevent_getfd(bev));
-            bufferevent_free(bev);
-            free(udpdata);
-            free(buf);
-            return;
-        }
-        printf("[%s] [INF] recv %ld bytes udp data from %s@%d\n", current_time(curtime), datalen, sock_path, bufferevent_getfd(bev));
-
-        // 目的主机的套接字地址
-        struct sockaddr_in destaddr;
-        memset(&destaddr, 0, sizeof(destaddr));
-        destaddr.sin_family = AF_INET;
-        destaddr.sin_addr.s_addr = addr;
-        destaddr.sin_port = port;
-
-        // 创建收发数据的套接字
-        evutil_socket_t destsock = socket(AF_INET, SOCK_DGRAM, 0);
-        evutil_make_socket_nonblocking(destsock); // 必须设为非阻塞
-
-        // 发送解码出来的原数据
-        if (sendto(destsock, udpdata, datalen, 0, (struct sockaddr *)&destaddr, sizeof(destaddr)) == -1) {
-            fprintf(stderr, "[%s] [ERR] send udp data to %s:%d failed (cfd=%d): (%d) %s\n", current_time(curtime),
-                    inet_ntoa(destaddr.sin_addr), ntohs(destaddr.sin_port), bufferevent_getfd(bev), errno, strerror(errno));
-            printf("[%s] [INF] closed client connection: %s@%d\n", current_time(curtime), sock_path, bufferevent_getfd(bev));
-            bufferevent_free(bev);
-            close(destsock);
-            free(udpdata);
-            free(buf);
-            return;
-        }
-        printf("[%s] [INF] send %ld bytes udp data to %s:%d. fd: %s@%d\n", current_time(curtime), datalen,
-                inet_ntoa(destaddr.sin_addr), ntohs(destaddr.sin_port), sock_path, bufferevent_getfd(bev));
-
-        // 将当前 BEV 的回调取消
-        bufferevent_setcb(bev, NULL, NULL, NULL, NULL);
-
-        // 创建 event 来接收数据
-        struct event *ev = event_new(bufferevent_get_base(bev), destsock, EV_READ | EV_TIMEOUT, read_cb_for_udp, bev);
-        struct timeval tv = {5, 0};
-        event_add(ev, &tv);
-
-        free(udpdata);
-        free(buf);
+    if (reqline == NULL) {
+        printf("[%s] [ERR] bad request of %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
+        printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
+        bufferevent_free(bev);
         return;
     }
 
-    // TCP 代理
-    if (header_type != NULL) {
-        header_type += strlen("\r\nConnectionType: ");       // beg_ptr
-        char *header_type_end = strstr(header_type, "\r\n"); // end_ptr
+    while ((reqline = evbuffer_readln(input, NULL, EVBUFFER_EOL_CRLF)) != NULL) {
+        char *type_header = strstr(reqline, "ConnectionType: ");
+        if (type_header != NULL && type_header == reqline) {
+            type_header += strlen("ConnectionType: "); // move to value's pos
 
-        // 如果没有找到 \r\n 结束字符 (通常不会)
-        if (header_type_end == NULL) {
-            fprintf(stderr, "[%s] [ERR] (tcp proxy) TYPE header not end with '\\r\\n'. fd=%d\n", current_time(curtime), bufferevent_getfd(bev));
-            printf("[%s] [INF] closed client connection: %s@%d\n", current_time(curtime), sock_path, bufferevent_getfd(bev));
+            // 长度不对
+            if (strlen(type_header) < 25) {
+                printf("[%s] [ERR] bad request of %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
+                printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
+                bufferevent_free(bev);
+                free(reqline);
+                return;
+            }
+
+            char type[4] = {0};
+            strncpy(type, type_header, 3);
+
+            // TCP 类型
+            if (strcmp(type, "tcp") == 0) {
+                char *addrptr = strstr(type_header, "tcp; addr=");
+
+                // 格式不对
+                if (addrptr != type_header) {
+                    printf("[%s] [ERR] bad request of %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
+                    printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
+                    bufferevent_free(bev);
+                    free(reqline);
+                    return;
+                }
+
+                addrptr += strlen("tcp; addr=");
+                char *portptr = strstr(addrptr, "; port=");
+
+                // 格式不对
+                if (portptr == NULL || portptr == addrptr) {
+                    printf("[%s] [ERR] bad request of %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
+                    printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
+                    bufferevent_free(bev);
+                    free(reqline);
+                    return;
+                }
+
+                *portptr = 0;
+                portptr += strlen("; port=");
+
+                // 格式不对
+                if (strlen(portptr) == 0) {
+                    printf("[%s] [ERR] bad request of %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
+                    printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
+                    bufferevent_free(bev);
+                    free(reqline);
+                    return;
+                }
+
+                // 解析 IP
+                uint32_t addr = inet_addr(addrptr);
+                if (addr == INADDR_NONE) {
+                    printf("[%s] [ERR] bad request of %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
+                    printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
+                    bufferevent_free(bev);
+                    free(reqline);
+                    return;
+                }
+
+                // 解析端口
+                uint16_t port = htons(strtol(portptr, NULL, 10));
+                if (port == 0) {
+                    printf("[%s] [ERR] bad request of %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
+                    printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
+                    bufferevent_free(bev);
+                    free(reqline);
+                    return;
+                }
+
+                // 创建地址
+                struct sockaddr_in destaddr;
+                memset(&destaddr, 0, sizeof(destaddr));
+                destaddr.sin_family = AF_INET;
+                destaddr.sin_addr.s_addr = addr;
+                destaddr.sin_port = port;
+
+                // 创建连接
+                struct bufferevent *destbev = bufferevent_socket_new(bufferevent_get_base(bev), -1, BEV_OPT_CLOSE_ON_FREE);
+                bufferevent_setcb(destbev, NULL, NULL, tcp_events_cb, bev);
+                bufferevent_enable(destbev, EV_READ | EV_WRITE);
+                bufferevent_socket_connect(destbev, (struct sockaddr *)&destaddr, sizeof(destaddr));
+                set_tcp_sockopt(bufferevent_getfd(destbev));
+                printf("[%s] [INF] connecting to %s:%s\n", curtime(ctime), addrptr, portptr);
+
+                // 设置 BEV
+                bufferevent_setcb(bev, NULL, NULL, tcp_events_cb, destbev);
+
+                free(reqline);
+                return;
+            }
+
+            // UDP 类型
+            if (strcmp(type, "udp") == 0) {
+                char *addrptr = strstr(type_header, "udp; addr=");
+
+                // 格式不对
+                if (addrptr != type_header) {
+                    printf("[%s] [ERR] bad request of %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
+                    printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
+                    bufferevent_free(bev);
+                    free(reqline);
+                    return;
+                }
+
+                addrptr += strlen("udp; addr=");
+                char *portptr = strstr(addrptr, "; port=");
+
+                // 格式不对
+                if (portptr == NULL || portptr == addrptr) {
+                    printf("[%s] [ERR] bad request of %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
+                    printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
+                    bufferevent_free(bev);
+                    free(reqline);
+                    return;
+                }
+
+                *portptr = 0;
+                portptr += strlen("; port=");
+
+                // 格式不对
+                if (strlen(portptr) == 0) {
+                    printf("[%s] [ERR] bad request of %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
+                    printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
+                    bufferevent_free(bev);
+                    free(reqline);
+                    return;
+                }
+
+                // 格式不对
+                char *dataptr = strstr(portptr, "; data=");
+                if (dataptr == NULL || dataptr == portptr) {
+                    printf("[%s] [ERR] bad request of %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
+                    printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
+                    bufferevent_free(bev);
+                    free(reqline);
+                    return;
+                }
+
+                *dataptr = 0;
+                dataptr += strlen("; data=");
+
+                // 格式不对
+                if (strlen(dataptr) == 0) {
+                    printf("[%s] [ERR] bad request of %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
+                    printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
+                    bufferevent_free(bev);
+                    free(reqline);
+                    return;
+                }
+
+                // 解析 IP
+                uint32_t addr = inet_addr(addrptr);
+                if (addr == INADDR_NONE) {
+                    printf("[%s] [ERR] bad request of %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
+                    printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
+                    bufferevent_free(bev);
+                    free(reqline);
+                    return;
+                }
+
+                // 解析端口
+                uint16_t port = htons(strtol(portptr, NULL, 10));
+                if (port == 0) {
+                    printf("[%s] [ERR] bad request of %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
+                    printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
+                    bufferevent_free(bev);
+                    free(reqline);
+                    return;
+                }
+
+                // 解析数据
+                void *rawdata = malloc(strlen(dataptr));
+                size_t datalen = 0;
+                if (base64_decode(dataptr, strlen(dataptr), rawdata, &datalen, 0) != 1) {
+                    printf("[%s] [ERR] bad request of %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
+                    printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
+                    bufferevent_free(bev);
+                    free(reqline);
+                    free(rawdata);
+                    return;
+                }
+
+                // 创建地址
+                struct sockaddr_in destaddr;
+                memset(&destaddr, 0, sizeof(destaddr));
+                destaddr.sin_family = AF_INET;
+                destaddr.sin_addr.s_addr = addr;
+                destaddr.sin_port = port;
+
+                // 发送数据
+                char error[64] = {0};
+                int destsock = socket(AF_INET, SOCK_DGRAM, 0);
+                evutil_make_socket_nonblocking(destsock);
+                if (sendto(destsock, rawdata, datalen, 0, (struct sockaddr *)&destaddr, sizeof(destaddr)) == -1) {
+                    printf("[%s] [ERR] sendto %s:%d: (%d) %s\n", curtime(ctime), inet_ntoa(destaddr.sin_addr), ntohs(destaddr.sin_port), errno, strerror_r(errno, error, 64));
+                    printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
+                    bufferevent_free(bev);
+                    close(destsock);
+                    free(reqline);
+                    free(rawdata);
+                    return;
+                }
+                printf("[%s] [INF] send %ld bytes data to %s:%d\n", curtime(ctime), datalen, inet_ntoa(destaddr.sin_addr), ntohs(destaddr.sin_port));
+                free(rawdata);
+
+                // 注册事件
+                struct udp_arg *udparg = malloc(sizeof(struct udp_arg));
+                struct event *ev = event_new(bufferevent_get_base(bev), destsock, EV_READ, udp_rcvres_cb, udparg);
+                udparg->ev = ev;
+                udparg->bev = bev;
+                struct timeval tv = {10, 0}; // UDP read timeout
+                event_add(ev, &tv);
+
+                // 设置 BEV
+                bufferevent_setcb(bev, NULL, NULL, udp_events_cb, udparg);
+
+                free(reqline);
+                return;
+            }
+
+            // 错误类型
+            printf("[%s] [ERR] bad request of %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
+            printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
             bufferevent_free(bev);
-            free(buf);
+            free(reqline);
             return;
         }
 
-        // 在 end_ptr 处写入 \0 字符
-        *header_type_end = 0;
-
-        // 如果字符串长度不符合预设情况
-        if (strlen(header_type) < 25 || strlen(header_type) > 37) {
-            fprintf(stderr, "[%s] [ERR] (tcp proxy) TYPE header length is incorrect. fd=%d\n", current_time(curtime), bufferevent_getfd(bev));
-            printf("[%s] [INF] closed client connection: %s@%d\n", current_time(curtime), sock_path, bufferevent_getfd(bev));
-            bufferevent_free(bev);
-            free(buf);
-            return;
-        }
-
-        // 存储 'tcp' or 'udp' 的数组
-        char type[4] = {0};
-        strncpy(type, header_type, 3);
-
-        // 如果 type != 'tcp'
-        if (strcmp(type, "tcp") != 0) {
-            fprintf(stderr, "[%s] [ERR] TYPE header format error ('type' not equals 'tcp'). fd=%d\n", current_time(curtime), bufferevent_getfd(bev));
-            printf("[%s] [INF] closed client connection: %s@%d\n", current_time(curtime), sock_path, bufferevent_getfd(bev));
-            bufferevent_free(bev);
-            free(buf);
-            return;
-        }
-
-        // 查找 'addr=' 子字符串
-        char *addr_str = strstr(header_type, "tcp; addr=");
-
-        // 如果没有找到 'addr=' 子串
-        if (addr_str != header_type) {
-            fprintf(stderr, "[%s] [ERR] TYPE header format error (param 'addr' not found). fd=%d\n", current_time(curtime), bufferevent_getfd(bev));
-            printf("[%s] [INF] closed client connection: %s@%d\n", current_time(curtime), sock_path, bufferevent_getfd(bev));
-            bufferevent_free(bev);
-            free(buf);
-            return;
-        }
-
-        // 找到后将 addr_str 移至 IP 地址开头处
-        addr_str += strlen("tcp; addr=");
-
-        // 查找 'port=' 子字符串
-        char *port_str = strstr(addr_str, "; port=");
-
-        // 如果没有找到 'port=' 子串
-        if (port_str == NULL) {
-            fprintf(stderr, "[%s] [ERR] TYPE header format error (param 'port' not found). fd=%d\n", current_time(curtime), bufferevent_getfd(bev));
-            printf("[%s] [INF] closed client connection: %s@%d\n", current_time(curtime), sock_path, bufferevent_getfd(bev));
-            bufferevent_free(bev);
-            free(buf);
-            return;
-        }
-
-        // 找到后在 port_str 处写入 \0 字符
-        *port_str = 0;
-        // 然后将 port_str 移至 Port 开头处
-        port_str += strlen("; port=");
-
-        // 尝试解析 IP 地址
-        unsigned long addr = inet_addr(addr_str);
-        if (addr == INADDR_NONE) {
-            fprintf(stderr, "[%s] [ERR] TYPE header format error (param 'addr' format error). fd=%d\n", current_time(curtime), bufferevent_getfd(bev));
-            printf("[%s] [INF] closed client connection: %s@%d\n", current_time(curtime), sock_path, bufferevent_getfd(bev));
-            bufferevent_free(bev);
-            free(buf);
-            return;
-        }
-
-        // 尝试解析 Port 端口
-        unsigned short port = htons((int)strtol(port_str, NULL, 10));
-        if (port == 0) {
-            fprintf(stderr, "[%s] [ERR] TYPE header format error (param 'port' format error). fd=%d\n", current_time(curtime), bufferevent_getfd(bev));
-            printf("[%s] [INF] closed client connection: %s@%d\n", current_time(curtime), sock_path, bufferevent_getfd(bev));
-            bufferevent_free(bev);
-            free(buf);
-            return;
-        }
-
-        // 目的主机的套接字地址
-        struct sockaddr_in destaddr;
-        memset(&destaddr, 0, sizeof(destaddr));
-        destaddr.sin_family = AF_INET;
-        destaddr.sin_addr.s_addr = addr;
-        destaddr.sin_port = port;
-
-        // 与目的主机建立 TCP 连接
-        struct tcp_cb_arg *destarg = (struct tcp_cb_arg *)malloc(sizeof(struct tcp_cb_arg));
-        destarg -> type = TCP_ARG_TYPE_INET; destarg -> bev = bev;
-        struct bufferevent *destbev = bufferevent_socket_new(bufferevent_get_base(bev), -1, BEV_OPT_CLOSE_ON_FREE);
-        bufferevent_setcb(destbev, NULL, NULL, event_cb_for_tcp, destarg);
-        bufferevent_enable(destbev, EV_READ | EV_WRITE);
-        bufferevent_socket_connect(destbev, (struct sockaddr *)&destaddr, sizeof(destaddr));
-
-        /* enable tcp keepalive */
-        int on = 1;
-        if (setsockopt(bufferevent_getfd(destbev), SOL_SOCKET, SO_KEEPALIVE, &on, sizeof(on)) == -1) {
-            fprintf(stderr, "[%s] [WRN] setsockopt(SO_KEEPALIVE) for %s:%d: (%d) %s\n",
-                    current_time(curtime), inet_ntoa(destaddr.sin_addr), ntohs(destaddr.sin_port), errno, strerror(errno));
-        }
-
-        int idle = 30;
-        if (setsockopt(bufferevent_getfd(destbev), IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle)) == -1) {
-            fprintf(stderr, "[%s] [WRN] setsockopt(TCP_KEEPIDLE) for %s:%d: (%d) %s\n",
-                    current_time(curtime), inet_ntoa(destaddr.sin_addr), ntohs(destaddr.sin_port), errno, strerror(errno));
-        }
-
-        int intvl = 30;
-        if (setsockopt(bufferevent_getfd(destbev), IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl)) == -1) {
-            fprintf(stderr, "[%s] [WRN] setsockopt(TCP_KEEPINTVL) for %s:%d: (%d) %s\n",
-                    current_time(curtime), inet_ntoa(destaddr.sin_addr), ntohs(destaddr.sin_port), errno, strerror(errno));
-        }
-
-        int cnt = 2;
-        if (setsockopt(bufferevent_getfd(destbev), IPPROTO_TCP, TCP_KEEPCNT, &cnt, sizeof(cnt)) == -1) {
-            fprintf(stderr, "[%s] [WRN] setsockopt(TCP_KEEPCNT) for %s:%d: (%d) %s\n",
-                    current_time(curtime), inet_ntoa(destaddr.sin_addr), ntohs(destaddr.sin_port), errno, strerror(errno));
-        }
-
-        /* enable tcp nodelay */
-        if (setsockopt(bufferevent_getfd(destbev), IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on)) == -1) {
-            fprintf(stderr, "[%s] [WRN] setsockopt(TCP_NODELAY) for %s:%d: (%d) %s\n",
-                    current_time(curtime), inet_ntoa(destaddr.sin_addr), ntohs(destaddr.sin_port), errno, strerror(errno));
-        }
-
-        /* enable reuseaddr */
-        if (setsockopt(bufferevent_getfd(destbev), SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on)) == -1) {
-            fprintf(stderr, "[%s] [WRN] setsockopt(SO_REUSEADDR) for %s:%d: (%d) %s\n",
-                    current_time(curtime), inet_ntoa(destaddr.sin_addr), ntohs(destaddr.sin_port), errno, strerror(errno));
-        }
-
-        // 设置当前 BEV 的相关回调
-        struct tcp_cb_arg *clitarg = (struct tcp_cb_arg *)malloc(sizeof(struct tcp_cb_arg));
-        clitarg -> type = TCP_ARG_TYPE_UNIX; clitarg -> bev = destbev;
-        bufferevent_setcb(bev, NULL, NULL, event_cb_for_tcp, clitarg);
-
-        free(buf);
-        return;
+        free(reqline);
     }
 
-    // 错误请求
-    fprintf(stderr, "[%s] [ERR] TYPE header or DATA header are not found. fd=%d\n", current_time(curtime), bufferevent_getfd(bev));
-    printf("[%s] [INF] closed client connection: %s@%d\n", current_time(curtime), sock_path, bufferevent_getfd(bev));
+    // 离开了循环还没找到对应的头部说明是错误请求
+    printf("[%s] [ERR] bad request of %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
+    printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
     bufferevent_free(bev);
-    free(buf);
+    free(reqline);
+    return;
 }
 
-void read_cb_for_udp(evutil_socket_t sock, short events, void *arg) {
-    char curtime[20] = {0};
-    struct bufferevent *bev = (struct bufferevent *)arg;
+void tcp_datfwd_cb(struct bufferevent *bev, void *arg) {
+    bufferevent_write_buffer(arg, bufferevent_get_input(bev));
+}
 
-    struct sockaddr_in peeraddr;
-    socklen_t addrlen = sizeof(peeraddr);
+void tcp_events_cb(struct bufferevent *bev, short events, void *arg) {
+    char ctime[20] = {0};
 
-    void *rawdata = malloc(UDP_PACKET_BUFSIZE);
-    int rawlen = recvfrom(sock, rawdata, UDP_PACKET_BUFSIZE, 0, (struct sockaddr *)&peeraddr, &addrlen);
+    struct sockaddr_in thisaddr;
+    socklen_t addrlen = sizeof(thisaddr);
+    getpeername(bufferevent_getfd(bev), (struct sockaddr *)&thisaddr, &addrlen);
 
-    if (rawlen == -1) {
-        if (events & EV_READ) {
-            fprintf(stderr, "[%s] [ERR] recv udp data from %s:%d failed. cfd=%d. (%d) %s\n", current_time(curtime),
-                    inet_ntoa(peeraddr.sin_addr), ntohs(peeraddr.sin_port), bufferevent_getfd(bev), errno, strerror(errno));
-        } else { // 发生超时
-            fprintf(stderr, "[%s] [ERR] recv udp data failed (udp server timeout). cfd=%d. (%d) %s\n",
-                    current_time(curtime), bufferevent_getfd(bev), errno, strerror(errno));
-        }
-        printf("[%s] [INF] closed client connection: %s@%d\n", current_time(curtime), sock_path, bufferevent_getfd(bev));
+    if (events & BEV_EVENT_CONNECTED) {
+        printf("[%s] [INF] connected to %s:%d\n", curtime(ctime), inet_ntoa(thisaddr.sin_addr), ntohs(thisaddr.sin_port));
+        bufferevent_write(arg, WEBSOCKET_RESPONSE, strlen(WEBSOCKET_RESPONSE));
+        bufferevent_setcb(bev, tcp_datfwd_cb, NULL, tcp_events_cb, arg);
+        bufferevent_setcb(arg, tcp_datfwd_cb, NULL, tcp_events_cb, bev);
+        return;
+    }
+
+    if (events & BEV_EVENT_ERROR) {
+        char error[64] = {0};
+        printf("[%s] [ERR] error of %s:%d: (%d) %s\n", curtime(ctime), inet_ntoa(thisaddr.sin_addr), ntohs(thisaddr.sin_port), errno, strerror_r(errno, error, 64));
+    }
+
+    if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR)) {
+        struct sockaddr_in othraddr;
+        getpeername(bufferevent_getfd(arg), (struct sockaddr *)&othraddr, &addrlen);
+        printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), inet_ntoa(thisaddr.sin_addr), ntohs(thisaddr.sin_port));
+        printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), inet_ntoa(othraddr.sin_addr), ntohs(othraddr.sin_port));
         bufferevent_free(bev);
-        free(rawdata);
+        bufferevent_free(arg);
+    }
+}
+
+void udp_rcvres_cb(int sock, short events, void *arg) {
+    char ctime[20] = {0};
+    char error[64] = {0};
+    struct udp_arg *udparg = arg;
+
+    struct sockaddr_in destaddr;
+    socklen_t addrlen = sizeof(destaddr);
+    getpeername(sock, (struct sockaddr *)&destaddr, &addrlen);
+
+    if (events & EV_TIMEOUT) {
+        printf("[%s] [ERR] recv udp data timeout of %s:%d\n", curtime(ctime), inet_ntoa(destaddr.sin_addr), ntohs(destaddr.sin_port));
+        bufferevent_free(udparg->bev);
+        event_free(udparg->ev);
+        free(udparg);
         close(sock);
         return;
     }
-    printf("[%s] [INF] recv %d bytes udp data from %s:%d. cfd: %s@%d\n", current_time(curtime), rawlen,
-            inet_ntoa(peeraddr.sin_addr), ntohs(peeraddr.sin_port), sock_path, bufferevent_getfd(bev));
 
-    size_t enclen = 0;
-    int rl_dup = rawlen;
-    char *encdata = (char *)malloc(UDP_BASE64_BUFSIZE);
-    base64_encode(rawdata, rawlen, encdata, &enclen, 0);
+    void *rawbuf = malloc(UDP_RAW_BUFSIZ);
+    int rawlen = recvfrom(sock, rawbuf, UDP_RAW_BUFSIZ, 0, NULL, NULL);
 
-    bufferevent_write(bev, WEBSOCKET_RESPONSE, strlen(WEBSOCKET_RESPONSE) - 2);
-    bufferevent_write(bev, "ConnectionData: ", strlen("ConnectionData: "));
-    bufferevent_write(bev, encdata, enclen);
-    bufferevent_write(bev, "\r\n\r\n", 4);
-    printf("[%s] [INF] send %d bytes udp data to %s@%d. from: %s:%d\n", current_time(curtime), rl_dup,
-            sock_path, bufferevent_getfd(bev), inet_ntoa(peeraddr.sin_addr), ntohs(peeraddr.sin_port));
-
-    close(sock);
-    free(rawdata);
-    free(encdata);
-
-    bufferevent_setcb(bev, NULL, NULL, event_cb_for_req, NULL);
-}
-
-void read_cb_for_tcp(struct bufferevent *bev, void *arg) {
-    evbuffer_add_buffer(bufferevent_get_output(((struct tcp_cb_arg *)arg)->bev), bufferevent_get_input(bev));
-}
-
-void event_cb_for_tcp(struct bufferevent *bev, short events, void *arg) {
-    char curtime[20] = {0};
-    struct tcp_cb_arg *tcparg = (struct tcp_cb_arg *)arg;
-
-    if ((events & BEV_EVENT_CONNECTED) && tcparg->type == TCP_ARG_TYPE_INET) {
-        struct sockaddr_in destaddr; socklen_t addrlen = sizeof(struct sockaddr_in);
-        getpeername(bufferevent_getfd(bev), (struct sockaddr *)&destaddr, &addrlen);
-
-        printf("[%s] [INF] connected to target host %s:%d (client fd=%d)\n", current_time(curtime),
-               inet_ntoa(destaddr.sin_addr), ntohs(destaddr.sin_port), bufferevent_getfd(tcparg->bev));
-        bufferevent_write(tcparg->bev, WEBSOCKET_RESPONSE, strlen(WEBSOCKET_RESPONSE));
-
-        bufferevent_setcb(bev, read_cb_for_tcp, NULL, event_cb_for_tcp, arg);
-
-        struct tcp_cb_arg *cliarg = NULL;
-        bufferevent_getcb(tcparg->bev, NULL, NULL, NULL, (void **)&cliarg);
-        bufferevent_setcb(tcparg->bev, read_cb_for_tcp, NULL, event_cb_for_tcp, cliarg);
+    if (rawlen == -1) {
+        printf("[%s] [ERR] recv data from %s:%d: (%d) %s\n", curtime(ctime), inet_ntoa(destaddr.sin_addr), ntohs(destaddr.sin_port), errno, strerror_r(errno, error, 64));
+        bufferevent_free(udparg->bev);
+        event_free(udparg->ev);
+        free(udparg);
+        free(rawbuf);
+        close(sock);
         return;
     }
 
+    char *encbuf = malloc(UDP_ENC_BUFSIZ);
+    size_t enclen = 0;
+    base64_encode(rawbuf, rawlen, encbuf, &enclen, 0);
+    free(rawbuf);
+
+    bufferevent_write(udparg->bev, WEBSOCKET_RESPONSE, strlen(WEBSOCKET_RESPONSE) - 2);
+    bufferevent_write(udparg->bev, "ConnectionType: ", strlen("ConnectionType: "));
+    bufferevent_write(udparg->bev, encbuf, enclen);
+    bufferevent_write(udparg->bev, "\r\n\r\n", 4);
+    free(encbuf);
+
+    struct sockaddr_in clntaddr;
+    getpeername(bufferevent_getfd(udparg->bev), (struct sockaddr *)&clntaddr, &addrlen);
+    printf("[%s] [INF] send %d bytes to %s:%d\n", curtime(ctime), rawlen, inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
+
+    close(sock);
+    event_free(udparg->ev);
+    udparg->ev = NULL; // 告诉 clntbev 不用 free event 了
+}
+
+void udp_events_cb(struct bufferevent *bev, short events, void *arg) {
+    char ctime[20] = {0};
+
+    struct sockaddr_in clntaddr;
+    socklen_t addrlen = sizeof(clntaddr);
+    getpeername(bufferevent_getfd(bev), (struct sockaddr *)&clntaddr, &addrlen);
+
     if (events & BEV_EVENT_ERROR) {
-        if (tcparg->type == TCP_ARG_TYPE_INET) {
-            struct sockaddr_in destaddr; socklen_t addrlen = sizeof(struct sockaddr_in);
-            getpeername(bufferevent_getfd(bev), (struct sockaddr *)&destaddr, &addrlen);
-            fprintf(stderr, "[%s] [ERR] error occurred when processing: %s:%d (%d) %s\n",
-                    current_time(curtime), inet_ntoa(destaddr.sin_addr), ntohs(destaddr.sin_port), errno, strerror(errno));
-        } else {
-            fprintf(stderr, "[%s] [ERR] error occurred when processing: %s@%d (%d) %s\n",
-                    current_time(curtime), sock_path, bufferevent_getfd(bev), errno, strerror(errno));
-        }
+        char error[64] = {0};
+        printf("[%s] [ERR] error of %s:%d: (%d) %s\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port), errno, strerror_r(errno, error, 64));
     }
 
-    if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR)) {
-        evutil_socket_t sock;
-        struct sockaddr_in addr;
-        socklen_t addrlen = sizeof(addr);
+    printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
 
-        if (tcparg->type == TCP_ARG_TYPE_INET) {
-            sock = bufferevent_getfd(tcparg->bev);
-            getpeername(bufferevent_getfd(bev), (struct sockaddr *)&addr, &addrlen);
-        } else {
-            sock = bufferevent_getfd(bev);
-            getpeername(bufferevent_getfd(tcparg->bev), (struct sockaddr *)&addr, &addrlen);
-        }
-
-        struct tcp_cb_arg *peerarg = NULL;
-        bufferevent_getcb(tcparg->bev, NULL, NULL, NULL, (void **)&peerarg);
-
-        printf("[%s] [INF] closed client connection: %s@%d\n", current_time(curtime), sock_path, sock);
-        printf("[%s] [INF] closed server connection: %s:%d\n", current_time(curtime), inet_ntoa(addr.sin_addr), ntohs(addr.sin_port));
-        bufferevent_free(bev);
-        bufferevent_free(tcparg->bev);
-
-        free(arg);
-        free(peerarg);
+    struct udp_arg *udparg = arg;
+    if (udparg->ev != NULL) {
+        event_free(udparg->ev);
+        close(event_get_fd(udparg->ev));
     }
+    bufferevent_free(bev);
+    free(udparg);
 }

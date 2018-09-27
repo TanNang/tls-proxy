@@ -551,11 +551,14 @@ void udp_rcvres_cb(int sock, short events, void *arg) {
     struct udp_arg *udparg = arg;
 
     struct sockaddr_in destaddr;
-    socklen_t addrlen = sizeof(destaddr);
+    memset(&destaddr, 0, sizeof(destaddr));
+    socklen_t addrlen = sizeof(struct sockaddr_in);
     getpeername(sock, (struct sockaddr *)&destaddr, &addrlen);
 
     if (events & EV_TIMEOUT) {
         printf("[%s] [ERR] recv udp data timeout of %s:%d\n", curtime(ctime), inet_ntoa(destaddr.sin_addr), ntohs(destaddr.sin_port));
+        getpeername(bufferevent_getfd(udparg->bev), (struct sockaddr *)&destaddr, &addrlen);
+        printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), inet_ntoa(destaddr.sin_addr), ntohs(destaddr.sin_port));
         bufferevent_free(udparg->bev);
         event_free(udparg->ev);
         free(udparg);
@@ -568,6 +571,8 @@ void udp_rcvres_cb(int sock, short events, void *arg) {
 
     if (rawlen == -1) {
         printf("[%s] [ERR] recv data from %s:%d: (%d) %s\n", curtime(ctime), inet_ntoa(destaddr.sin_addr), ntohs(destaddr.sin_port), errno, strerror_r(errno, error, 64));
+        getpeername(bufferevent_getfd(udparg->bev), (struct sockaddr *)&destaddr, &addrlen);
+        printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), inet_ntoa(destaddr.sin_addr), ntohs(destaddr.sin_port));
         bufferevent_free(udparg->bev);
         event_free(udparg->ev);
         free(udparg);

@@ -165,15 +165,19 @@ int main(int argc, char *argv[]) {
     printf("[%s] [INF] thread numbers: %d\n", curtime(ctime), thread_nums);
     printf("[%s] [INF] listen address: %s:%d\n", curtime(ctime), listen_addr, listen_port);
 
-    pthread_t tid = 0;
     char error[64] = {0};
+    pthread_t tids[--thread_nums];
     for (int i = 0; i < thread_nums; ++i) {
-        if (pthread_create(&tid, NULL, service, NULL) != 0) {
+        if (pthread_create(tids + i, NULL, service, NULL) != 0) {
             printf("[%s] [ERR] create thread: (%d) (%s)\n", curtime(ctime), errno, strerror_r(errno, error, 64));
             return 1;
         }
     }
-    pthread_exit(NULL);
+    service(NULL);
+
+    for (int i = 0; i < thread_nums; ++i) {
+        pthread_join(tids[i], NULL);
+    }
 
     return 0;
 }

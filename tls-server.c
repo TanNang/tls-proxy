@@ -158,7 +158,7 @@ int main(int argc, char *argv[]) {
     }
 
     servaddr.sin_family = AF_INET;
-    inet_aton(listen_addr, &servaddr.sin_addr);
+    servaddr.sin_addr.s_addr = inet_addr(listen_addr);
     servaddr.sin_port = htons(listen_port);
 
     char ctime[20] = {0};
@@ -169,7 +169,7 @@ int main(int argc, char *argv[]) {
     pthread_t tids[--thread_nums];
     for (int i = 0; i < thread_nums; ++i) {
         if (pthread_create(tids + i, NULL, service, NULL) != 0) {
-            printf("[%s] [ERR] create thread: (%d) (%s)\n", curtime(ctime), errno, strerror_r(errno, error, 64));
+            printf("[%s] [ERR] create thread: (%d) %s\n", curtime(ctime), errno, strerror_r(errno, error, 64));
             return 1;
         }
     }

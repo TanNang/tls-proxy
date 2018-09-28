@@ -259,17 +259,18 @@ void new_1streq_cb(struct bufferevent *bev, void *arg) {
 
     struct evbuffer *input = bufferevent_get_input(bev);
     char *reqline = evbuffer_readln(input, NULL, EVBUFFER_EOL_CRLF);
-
     if (reqline == NULL) {
         printf("[%s] [ERR] bad request of %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
         printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
         bufferevent_free(bev);
         return;
     }
+    free(reqline);
 
     while ((reqline = evbuffer_readln(input, NULL, EVBUFFER_EOL_CRLF)) != NULL) {
         char *type_header = strstr(reqline, "ConnectionType: ");
-        if (type_header != NULL && type_header == reqline) {
+
+        if (type_header == reqline) {
             type_header += strlen("ConnectionType: "); // move to value's pos
 
             // 长度不对
@@ -507,7 +508,6 @@ void new_1streq_cb(struct bufferevent *bev, void *arg) {
     printf("[%s] [ERR] bad request of %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
     printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
     bufferevent_free(bev);
-    free(reqline);
     return;
 }
 
@@ -520,6 +520,7 @@ void tcp_events_cb(struct bufferevent *bev, short events, void *arg) {
 
     struct sockaddr_in thisaddr;
     socklen_t addrlen = sizeof(thisaddr);
+    memset(&thisaddr, 0, sizeof(thisaddr));
     getpeername(bufferevent_getfd(bev), (struct sockaddr *)&thisaddr, &addrlen);
 
     if (events & BEV_EVENT_CONNECTED) {
@@ -537,6 +538,7 @@ void tcp_events_cb(struct bufferevent *bev, short events, void *arg) {
 
     if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR)) {
         struct sockaddr_in othraddr;
+        memset(&othraddr, 0, sizeof(othraddr));
         getpeername(bufferevent_getfd(arg), (struct sockaddr *)&othraddr, &addrlen);
         printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), inet_ntoa(thisaddr.sin_addr), ntohs(thisaddr.sin_port));
         printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), inet_ntoa(othraddr.sin_addr), ntohs(othraddr.sin_port));
@@ -550,15 +552,13 @@ void udp_rcvres_cb(int sock, short events, void *arg) {
     char error[64] = {0};
     struct udp_arg *udparg = arg;
 
-    struct sockaddr_in destaddr;
-    memset(&destaddr, 0, sizeof(destaddr));
-    socklen_t addrlen = sizeof(struct sockaddr_in);
-    getpeername(sock, (struct sockaddr *)&destaddr, &addrlen);
+    struct sockaddr_in clntaddr;
+    socklen_t addrlen = sizeof(clntaddr);
+    getpeername(bufferevent_getfd(udparg->bev), (struct sockaddr *)&clntaddr, &addrlen);
 
     if (events & EV_TIMEOUT) {
-        printf("[%s] [ERR] recv udp data timeout of %s:%d\n", curtime(ctime), inet_ntoa(destaddr.sin_addr), ntohs(destaddr.sin_port));
-        getpeername(bufferevent_getfd(udparg->bev), (struct sockaddr *)&destaddr, &addrlen);
-        printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), inet_ntoa(destaddr.sin_addr), ntohs(destaddr.sin_port));
+        printf("[%s] [ERR] recv timeout for %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
+        printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
         bufferevent_free(udparg->bev);
         event_free(udparg->ev);
         free(udparg);
@@ -566,13 +566,13 @@ void udp_rcvres_cb(int sock, short events, void *arg) {
         return;
     }
 
+    struct sockaddr_in destaddr;
     void *rawbuf = malloc(UDP_RAW_BUFSIZ);
-    int rawlen = recvfrom(sock, rawbuf, UDP_RAW_BUFSIZ, 0, NULL, NULL);
+    int rawlen = recvfrom(sock, rawbuf, UDP_RAW_BUFSIZ, 0, (struct sockaddr *)&destaddr, &addrlen);
 
     if (rawlen == -1) {
         printf("[%s] [ERR] recv data from %s:%d: (%d) %s\n", curtime(ctime), inet_ntoa(destaddr.sin_addr), ntohs(destaddr.sin_port), errno, strerror_r(errno, error, 64));
-        getpeername(bufferevent_getfd(udparg->bev), (struct sockaddr *)&destaddr, &addrlen);
-        printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), inet_ntoa(destaddr.sin_addr), ntohs(destaddr.sin_port));
+        printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
         bufferevent_free(udparg->bev);
         event_free(udparg->ev);
         free(udparg);
@@ -590,15 +590,12 @@ void udp_rcvres_cb(int sock, short events, void *arg) {
     bufferevent_write(udparg->bev, "ConnectionType: ", strlen("ConnectionType: "));
     bufferevent_write(udparg->bev, encbuf, enclen);
     bufferevent_write(udparg->bev, "\r\n\r\n", 4);
-    free(encbuf);
-
-    struct sockaddr_in clntaddr;
-    getpeername(bufferevent_getfd(udparg->bev), (struct sockaddr *)&clntaddr, &addrlen);
     printf("[%s] [INF] send %d bytes data to %s:%d\n", curtime(ctime), rawlen, inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
 
     close(sock);
+    free(encbuf);
     event_free(udparg->ev);
-    udparg->ev = NULL; // 告诉 clntbev 不用 free event 了
+    udparg->ev = NULL; // mark
 }
 
 void udp_events_cb(struct bufferevent *bev, short events, void *arg) {

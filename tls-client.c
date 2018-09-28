@@ -26,22 +26,20 @@
 #include "libbase64.h"
 
 #define PRINT_COMMAND_HELP \
-    printf("usage: tls-client OPTIONS [-v] [-h]. OPTIONS are as follows:\n"\
+    printf("usage: tls-client <OPTIONS>. OPTIONS have these:\n"\
            " -s <server_host>        server host. can't use IP address\n"\
            " -p <server_port>        server port. the default port is 443\n"\
-           " -c <cafile_path>        CA file location. eg: /etc/ssl/ca.crt\n"\
+           " -c <cafile_path>        CA file location. eg: /etc/ssl/cert.pem\n"\
            " -P <request_uri>        websocket request line uri. eg: /tls-proxy\n"\
-           " -H <request_header>     websocket request headers. allow multi lines\n"\
-           " -t <tcp_listen_addr>    tcp listen addr. format: [addr:]port. default: 60080\n"\
-           "                         if not specify listen addr, 0.0.0.0 is used by default\n"\
-           " -u <udp_listen_addr>    udp listen addr. format: [addr:]port. default: 60080\n"\
-           "                         if not specify listen addr, 0.0.0.0 is used by default\n"\
-           " -d <dns_listen_addr>    dns listen addr. format: [addr:]port. default: 60053\n"\
-           "                         if not specify listen addr, 0.0.0.0 is used by default\n"\
-           " -D <dns_remote_addr>    remote dns server address. default addr is 8.8.8.8:53\n"\
-           "                         if not specify dns server port, 53 is used by default\n"\
-           " -j <number_of_worker>   number of worker threads. default: 0 (number of CPUs)\n"\
-           " -v                      show version and exit\n"\
-           " -h                      show this help and exit\n")
+           " -H <request_header>     websocket request headers. allow multiple lines\n"\
+           " -b <listen_address>     tcp & udp & dns listen address. default: 0.0.0.0\n"\
+           " -t <tcp_proxy_port>     tcp proxy port (iptables redirect).  default: 60080\n"\
+           " -u <udp_proxy_port>     udp proxy port (iptables xt_tproxy). default: 60080\n"\
+           " -d <dns_proxy_port>     dns proxy port (local port forward). default: 60053\n"\
+           " -D <dns_remote_addr>    remote dns server address. default addr: 8.8.8.8:53\n"\
+           "                         if not specify server port, 53 will used by default\n"\
+           " -j <thread_numbers>     number of worker threads. default is number of CPUs\n"\
+           " -v                      show current version and exit\n"\
+           " -h                      show current message and exit\n")
 
 #define WEBSOCKET_STATUS_LINE "HTTP/1.1 101 Switching Protocols"

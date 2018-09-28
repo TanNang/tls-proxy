@@ -42,6 +42,8 @@
            " -v                      show current version and exit\n"\
            " -h                      show current message and exit\n")
 
+#define UDP_RAW_BUFSIZ 1472
+#define UDP_ENC_BUFSIZ 1960
 #define WEBSOCKET_STATUS_LINE "HTTP/1.1 101 Switching Protocols"
 #define SSL_CIPHERS "ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-CHACHA20-POLY1305"
 
@@ -57,10 +59,7 @@ static struct sockaddr_in  dnsladdr     = {0};
 static char                dnsraddr[16] = "8.8.8.8";
 static char                dnsrport[6]  = "53";
 
-#define UDP_RAW_BUFSIZ 1472
-#define UDP_ENC_BUFSIZ 1960
-
-/* 线程关联的全局数据 */
+/* 线程私有的全局数据 */
 typedef struct {
     pthread_t    tid;
     SSL_CTX     *ctx;
@@ -450,16 +449,52 @@ void *service(void *arg) {
     // udp proxy
     int udplsock = socket(AF_INET, SOCK_DGRAM, 0);
     evutil_make_socket_nonblocking(udplsock);
+    set_udp_rawbuf(malloc(UDP_RAW_BUFSIZ));
 
     int on = 1;
     if (setsockopt(udplsock, SOL_IP, IP_TRANSPARENT, &on, sizeof(on)) == -1) {
         printf("[%s] [ERR] setsockopt(IP_TRANSPARENT): (%d) %s\n", curtime(ctime), errno, strerror_r(errno, error, 64));
-        return errno;
+        exit(errno);
     }
     if (setsockopt(udplsock, IPPROTO_IP, IP_RECVORIGDSTADDR, &on, sizeof(on)) == -1) {
         printf("[%s] [ERR] setsockopt(IP_RECVORIGDSTADDR): (%d) %s\n", curtime(ctime), errno, strerror_r(errno, error, 64));
-        return errno;
+        exit(errno);
     }
+
+    if (bind(udplsock, (struct sockaddr *)&udpladdr, sizeof(udpladdr)) == -1) {
+        printf("[%s] [ERR] bind address: (%d) %s\n", curtime(ctime), errno, strerror_r(errno, error, 64));
+        exit(errno);
+    }
+
+    struct event *udplev = event_new(base, udplsock, EV_READ | EV_PERSIST, udp_new_cb, NULL);
+    event_add(udplev, NULL);
+
+    // dns proxy
+    int dnslsock = socket(AF_INET, SOCK_DGRAM, 0);
+    evutil_make_socket_nonblocking(dnslsock);
+    set_dns_lsock(dnslsock);
+
+    if (bind(dnslsock, (struct sockaddr *)&dnsladdr, sizeof(dnsladdr)) == -1) {
+        printf("[%s] [ERR] bind address: (%d) %s\n", curtime(ctime), errno, strerror_r(errno, error, 64));
+        exit(errno);
+    }
+
+    struct event *dnslev = event_new(base, dnslsock, EV_READ | EV_PERSIST, dns_new_cb, NULL);
+    event_add(dnslev, NULL);
+
+    // event loop ...
+    event_base_dispatch(base);
+
+    // 清理相关资源
+    close(dnslsock);
+    close(udplsock);
+    event_free(dnslev);
+    event_free(udplev);
+    free(get_udp_rawbuf());
+    evconnlistener_free(tcplistener);
+    event_base_free(base);
+    libevent_global_shutdown();
+    SSL_CTX_free(ctx);
 
     return NULL;
 }

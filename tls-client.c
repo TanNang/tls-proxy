@@ -44,22 +44,39 @@
 
 #define WEBSOCKET_STATUS_LINE "HTTP/1.1 101 Switching Protocols"
 
-/* 线程相关的 SSL 对象 */
+/* 线程共享的全局数据 */
+static char               *servhost     = NULL;
+static int                 servport     = 443;
+static struct sockaddr_in  servaddr     = {0};
+static char               *cafile       = NULL;
+static char                servreq[256] = {0};
+static struct sockaddr_in  tcpladdr     = {0};
+static struct sockaddr_in  udpladdr     = {0};
+static struct sockaddr_in  dnsladdr     = {0};
+static char                dnsraddr[16] = "8.8.8.8";
+static char                dnsrport[6]  = "53";
+
+#define UDP_RAW_BUFSIZ 1472
+#define UDP_ENC_BUFSIZ 1960
+
+/* 线程关联的全局数据 */
 typedef struct {
     pthread_t    tid;
     SSL_CTX     *ctx;
     SSL_SESSION *sess;
-} SSL_DATA;
+    void        *udprbuf;
+    int          dnslsock;
+} THREAD_DATA;
 
-static int thread_nums = 0;
-static SSL_DATA *ssl_datas = NULL;
+static int          thread_nums  = 0;
+static THREAD_DATA *thread_datas = NULL;
 
 /* 获取当前线程的 SSL_CTX */
 SSL_CTX *get_ssl_ctx() {
     pthread_t tid = pthread_self();
     for (int i = 0; i < thread_nums; ++i) {
-        if (ssl_datas[i].tid == tid) {
-            return ssl_datas[i].ctx;
+        if (thread_datas[i].tid == tid) {
+            return thread_datas[i].ctx;
         }
     }
     return NULL;
@@ -69,11 +86,33 @@ SSL_CTX *get_ssl_ctx() {
 SSL_SESSION *get_ssl_sess() {
     pthread_t tid = pthread_self();
     for (int i = 0; i < thread_nums; ++i) {
-        if (ssl_datas[i].tid == tid) {
-            return ssl_datas[i].sess;
+        if (thread_datas[i].tid == tid) {
+            return thread_datas[i].sess;
         }
     }
     return NULL;
+}
+
+/* 获取当前线程的 udp raw buf */
+void *get_udp_rawbuf() {
+    pthread_t tid = pthread_self();
+    for (int i = 0; i < thread_nums; ++i) {
+        if (thread_datas[i].tid == tid) {
+            return thread_datas[i].udprbuf;
+        }
+    }
+    return NULL;
+}
+
+/* 获取当前线程的 dns listen sock */
+int get_dns_lsock() {
+    pthread_t tid = pthread_self();
+    for (int i = 0; i < thread_nums; ++i) {
+        if (thread_datas[i].tid == tid) {
+            return thread_datas[i].dnslsock;
+        }
+    }
+    return -1;
 }
 
 // sizeof(ctime) = 20
@@ -91,6 +130,7 @@ char *curtime(char *ctime) {
     return ctime;
 }
 
+// setsockopt for tcp connect
 void set_tcp_sockopt(int sock) {
     char ctime[20] = {0};
     char error[64] = {0};
@@ -121,4 +161,184 @@ void set_tcp_sockopt(int sock) {
     if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPCNT, &optval, sizeof(optval)) == -1) {
         printf("[%s] [WRN] setsockopt(TCP_KEEPCNT): (%d) %s\n", curtime(ctime), errno, strerror_r(errno, error, 64));
     }
+}
+
+// worker thread function
+void *service(void *arg);
+
+int main(int argc, char *argv[]) {
+    /* 选项默认值 */
+    char *request_uripath = NULL;
+    char *request_headers = NULL;
+    char *listen_address  = "0.0.0.0";
+    int   tcp_proxy_port  = 60080;
+    int   udp_proxy_port  = 60080;
+    int   dns_proxy_port  = 60053;
+          thread_nums     = get_nprocs();
+
+    /* 解析命令行 */
+    opterr = 0;
+    char *optstr = "s:p:c:P:H:b:t:u:d:D:j:vh";
+    int opt = -1;
+    while ((opt = getopt(argc, argv, optstr)) != -1) {
+        switch (opt) {
+            case 'v':
+                printf("tls-client v1.0\n");
+                return 0;
+            case 'h':
+                PRINT_COMMAND_HELP;
+                return 0;
+            case 's':
+                servhost = optarg;
+                break;
+            case 'p':
+                servport = strtol(optarg, NULL, 10);
+                if (servport <= 0 || servport > 65535) {
+                    printf("invalid server port: %d\n", servport);
+                    PRINT_COMMAND_HELP;
+                    return 1;
+                }
+                break;
+            case 'c':
+                cafile = optarg;
+                if (access(cafile, F_OK) == -1) {
+                    printf("CA file not exists: %s\n", cafile);
+                    PRINT_COMMAND_HELP;
+                    return 1;
+                }
+                break;
+            case 'P':
+                request_uripath = optarg;
+                break;
+            case 'H':
+                request_headers = optarg;
+                break;
+            case 'b':
+                listen_address = optarg;
+                break;
+            case 't':
+                tcp_proxy_port = strtol(optarg, NULL, 10);
+                if (tcp_proxy_port <= 0 || tcp_proxy_port > 65535) {
+                    printf("invalid tcp port: %d\n", tcp_proxy_port);
+                    PRINT_COMMAND_HELP;
+                    return 1;
+                }
+                break;
+            case 'u':
+                udp_proxy_port = strtol(optarg, NULL, 10);
+                if (udp_proxy_port <= 0 || udp_proxy_port > 65535) {
+                    printf("invalid udp port: %d\n", udp_proxy_port);
+                    PRINT_COMMAND_HELP;
+                    return 1;
+                }
+                break;
+            case 'd':
+                dns_proxy_port = strtol(optarg, NULL, 10);
+                if (dns_proxy_port <= 0 || dns_proxy_port > 65535) {
+                    printf("invalid dns port: %d\n", dns_proxy_port);
+                    PRINT_COMMAND_HELP;
+                    return 1;
+                }
+                break;
+            case 'D': {
+                char *ptr = strchr(optarg, ':');
+                if (ptr == NULL) {
+                    strcpy(dnsraddr, optarg);
+                    break;
+                }
+                strncpy(dnsraddr, optarg, ptr - optarg);
+                strncpy(dnsrport, ptr + 1, optarg + strlen(optarg) - ptr - 1);
+                break;
+            }
+            case 'j':
+                thread_nums = strtol(optarg, NULL, 10);
+                if (thread_nums <= 0) {
+                    printf("invalid thread nums: %d\n", thread_nums);
+                    PRINT_COMMAND_HELP;
+                    return 1;
+                }
+                break;
+            case '?':
+                if (strchr(optstr, optopt) == NULL) {
+                    fprintf(stderr, "unknown option '-%c'\n", optopt);
+                    PRINT_COMMAND_HELP;
+                    return 1;
+                } else {
+                    fprintf(stderr, "missing optval '-%c'\n", optopt);
+                    PRINT_COMMAND_HELP;
+                    return 1;
+                }
+        }
+    }
+
+    /* 处理选项值 */
+    if (servhost == NULL) {
+        printf("missing option '-s'\n");
+        PRINT_COMMAND_HELP;
+        return 1;
+    }
+    if (cafile == NULL) {
+        printf("missing option '-c'\n");
+        PRINT_COMMAND_HELP;
+        return 1;
+    }
+    if (request_uripath == NULL) {
+        printf("missing option '-P'\n");
+        PRINT_COMMAND_HELP;
+        return 1;
+    }
+
+    /* websocket 请求头 */
+    strcpy(servreq + strlen(servreq), "GET ");
+    strcpy(servreq + strlen(servreq), request_uripath);
+    strcpy(servreq + strlen(servreq), " HTTP/1.1\r\n");
+    strcpy(servreq + strlen(servreq), "Host: ");
+    strcpy(servreq + strlen(servreq), servhost);
+    strcpy(servreq + strlen(servreq), "\r\n");
+    strcpy(servreq + strlen(servreq), "Upgrade: websocket\r\n");
+    strcpy(servreq + strlen(servreq), "Connection: Upgrade\r\n");
+    if (request_headers != NULL) {
+        strcpy(servreq + strlen(servreq), request_headers); // must end with '\r\n'
+    }
+
+    /* tls-server sockaddr */
+    struct hostent *ent = gethostbyname(servhost);
+    if (ent == NULL) {
+        printf("can't resolve host: %s: (%d) %s\n", servhost, errno, strerror(errno));
+        return errno;
+    }
+    servaddr.sin_family = AF_INET;
+    memcpy(&servaddr.sin_addr, ent->h_addr_list[0], ent->h_length);
+    servaddr.sin_port = htons(servport);
+
+    /* tcp listen sockaddr */
+    tcpladdr.sin_family = AF_INET;
+    tcpladdr.sin_addr.s_addr = inet_addr(listen_address);
+    tcpladdr.sin_port = htons(tcp_proxy_port);
+
+    /* udp listen sockaddr */
+    udpladdr.sin_family = AF_INET;
+    udpladdr.sin_addr.s_addr = inet_addr(listen_address);
+    udpladdr.sin_port = htons(udp_proxy_port);
+
+    /* dns listen sockaddr */
+    dnsladdr.sin_family = AF_INET;
+    dnsladdr.sin_addr.s_addr = inet_addr(listen_address);
+    dnsladdr.sin_port = htons(dns_proxy_port);
+
+    /* print start message */
+    char ctime[20] = {0};
+    printf("[%s] [INF] thread nums: %d\n",    curtime(ctime), thread_nums);
+    printf("[%s] [INF] server host: %s\n",    curtime(ctime), servhost);
+    printf("[%s] [INF] server addr: %s:%d\n", curtime(ctime), inet_ntoa(servaddr.sin_addr), servport);
+    printf("[%s] [INF] tcp address: %s:%d\n", curtime(ctime), listen_address, tcp_proxy_port);
+    printf("[%s] [INF] udp address: %s:%d\n", curtime(ctime), listen_address, udp_proxy_port);
+    printf("[%s] [INF] dns address: %s:%d\n", curtime(ctime), listen_address, dns_proxy_port);
+    printf("[%s] [INF] dns resolve: %s:%s\n", curtime(ctime), dnsraddr, dnsrport);
+
+    /* create worker thread */
+    thread_datas = calloc(thread_nums, sizeof(THREAD_DATA));
+    // TODO
+
+    return 0;
 }

@@ -199,7 +199,7 @@ void *service(void *arg) {
     );
     if (listener == NULL) {
         printf("[%s] [ERR] listen socket: (%d) %s\n", curtime(ctime), errno, strerror_r(errno, error, 64));
-        exit(1);
+        exit(errno);
     }
     event_base_dispatch(base);
 

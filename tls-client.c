@@ -43,6 +43,7 @@
            " -h                      show current message and exit\n")
 
 #define WEBSOCKET_STATUS_LINE "HTTP/1.1 101 Switching Protocols"
+#define SSL_CIPHERS "ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-CHACHA20-POLY1305"
 
 /* 线程共享的全局数据 */
 static char               *servhost     = NULL;
@@ -81,6 +82,16 @@ SSL_CTX *get_ssl_ctx() {
     }
     return NULL;
 }
+/* 设置当前线程的 SSL_CTX */
+void set_ssl_ctx(SSL_CTX *ctx) {
+    pthread_t tid = pthread_self();
+    for (int i = 0; i < thread_nums; ++i) {
+        if (thread_datas[i].tid == tid) {
+            thread_datas[i].ctx = ctx;
+            return;
+        }
+    }
+}
 
 /* 获取当前线程的 SSL_SESSION */
 SSL_SESSION *get_ssl_sess() {
@@ -91,6 +102,16 @@ SSL_SESSION *get_ssl_sess() {
         }
     }
     return NULL;
+}
+/* 设置当前线程的 SSL_SESSION */
+void set_ssl_sess(SSL_SESSION *sess) {
+    pthread_t tid = pthread_self();
+    for (int i = 0; i < thread_nums; ++i) {
+        if (thread_datas[i].tid == tid) {
+            thread_datas[i].sess = sess;
+            return;
+        }
+    }
 }
 
 /* 获取当前线程的 udp raw buf */
@@ -103,6 +124,15 @@ void *get_udp_rawbuf() {
     }
     return NULL;
 }
+void set_udp_rawbuf(void *udprbuf) {
+    pthread_t tid = pthread_self();
+    for (int i = 0; i < thread_nums; ++i) {
+        if (thread_datas[i].tid == tid) {
+            thread_datas[i].udprbuf = udprbuf;
+            return;
+        }
+    }
+}
 
 /* 获取当前线程的 dns listen sock */
 int get_dns_lsock() {
@@ -113,6 +143,15 @@ int get_dns_lsock() {
         }
     }
     return -1;
+}
+void set_dns_lsock(int dnslsock) {
+    pthread_t tid = pthread_self();
+    for (int i = 0; i < thread_nums; ++i) {
+        if (thread_datas[i].tid == tid) {
+            thread_datas[i].dnslsock = dnslsock;
+            return;
+        }
+    }
 }
 
 // sizeof(ctime) = 20
@@ -301,6 +340,10 @@ int main(int argc, char *argv[]) {
         strcpy(servreq + strlen(servreq), request_headers); // must end with '\r\n'
     }
 
+    /* init openssl libs */
+    SSL_library_init();
+    SSL_load_error_strings();
+
     /* tls-server sockaddr */
     struct hostent *ent = gethostbyname(servhost);
     if (ent == NULL) {
@@ -338,7 +381,85 @@ int main(int argc, char *argv[]) {
 
     /* create worker thread */
     thread_datas = calloc(thread_nums, sizeof(THREAD_DATA));
-    // TODO
+    thread_datas[0].tid = pthread_self();
+    for (int i = 1; i < thread_nums; ++i) {
+        if (pthread_create(&thread_datas[i].tid, NULL, service, NULL) != 0) {
+            printf("[%s] [ERR] create thread: (%d) %s\n", curtime(ctime), errno, strerror(errno));
+            return errno;
+        }
+    }
+    service(NULL);
+
+    /* wait for other threads */
+    for (int i = 1; i < thread_nums; ++i) {
+        pthread_join(thread_datas[i].tid, NULL);
+    }
+
+    free(thread_datas);
+    ERR_free_strings();
+    EVP_cleanup();
 
     return 0;
+}
+
+/* TCP 相关回调 */
+void tcp_new_cb(struct evconnlistener *listener, int sock, struct sockaddr *addr, int addrlen, void *arg);
+void tcp_req_cb(struct bufferevent *bev, short events, void *arg);
+void tcp_res_cb(struct bufferevent *bev, void *arg);
+void tcp_fwd_cb(struct bufferevent *bev, void *arg);
+
+/* UDP 相关回调 */
+void udp_new_cb(int sock, short events, void *arg);
+void udp_req_cb(struct bufferevent *bev, short events, void *arg);
+void udp_res_cb(struct bufferevent *bev, void *arg);
+
+/* DNS 相关回调 */
+void dns_new_cb(int sock, short events, void *arg);
+void dns_req_cb(struct bufferevent *bev, short events, void *arg);
+void dns_res_cb(struct bufferevent *bev, void *arg);
+
+void *service(void *arg) {
+    (void) arg;
+    char ctime[20] = {0};
+    char error[64] = {0};
+
+    SSL_CTX *ctx = SSL_CTX_new(TLS_client_method());
+    SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
+    SSL_CTX_set_verify_depth(ctx, 4);
+    SSL_CTX_load_verify_locations(ctx, cafile, NULL);
+    SSL_CTX_set_options(ctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1 | SSL_OP_NO_COMPRESSION);
+    SSL_CTX_set_cipher_list(ctx, SSL_CIPHERS);
+    set_ssl_ctx(ctx);
+
+    struct event_config *cfg = event_config_new();
+    event_config_set_flag(cfg, EVENT_BASE_FLAG_NOLOCK | EVENT_BASE_FLAG_IGNORE_ENV);
+    struct event_base *base = event_base_new_with_config(cfg);
+    event_config_free(cfg);
+
+    // tcp proxy
+    struct evconnlistener *tcplistener = evconnlistener_new_bind(
+            base, tcp_new_cb, NULL,
+            LEV_OPT_CLOSE_ON_FREE | LEV_OPT_REUSEABLE | LEV_OPT_REUSEABLE_PORT,
+            SOMAXCONN, (struct sockaddr *)&tcpladdr, sizeof(struct sockaddr_in)
+    );
+    if (tcplistener == NULL) {
+        printf("[%s] [ERR] listen socket: (%d) %s\n", curtime(ctime), errno, strerror_r(errno, error, 64));
+        exit(errno);
+    }
+
+    // udp proxy
+    int udplsock = socket(AF_INET, SOCK_DGRAM, 0);
+    evutil_make_socket_nonblocking(udplsock);
+
+    int on = 1;
+    if (setsockopt(udplsock, SOL_IP, IP_TRANSPARENT, &on, sizeof(on)) == -1) {
+        printf("[%s] [ERR] setsockopt(IP_TRANSPARENT): (%d) %s\n", curtime(ctime), errno, strerror_r(errno, error, 64));
+        return errno;
+    }
+    if (setsockopt(udplsock, IPPROTO_IP, IP_RECVORIGDSTADDR, &on, sizeof(on)) == -1) {
+        printf("[%s] [ERR] setsockopt(IP_RECVORIGDSTADDR): (%d) %s\n", curtime(ctime), errno, strerror_r(errno, error, 64));
+        return errno;
+    }
+
+    return NULL;
 }

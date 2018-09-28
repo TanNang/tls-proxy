@@ -494,6 +494,7 @@ void *service(void *arg) {
     evconnlistener_free(tcplistener);
     event_base_free(base);
     libevent_global_shutdown();
+    SSL_SESSION_free(get_ssl_sess());
     SSL_CTX_free(ctx);
 
     return NULL;

@@ -480,6 +480,10 @@ void *service(void *arg) {
         printf("[%s] [ERR] setsockopt(IP_RECVORIGDSTADDR): (%d) %s\n", curtime(ctime), errno, strerror_r(errno, error, 64));
         exit(errno);
     }
+    if (setsockopt(udplsock, SOL_SOCKET, SO_REUSEPORT, &on, sizeof(on)) == -1) {
+        printf("[%s] [ERR] setsockopt(SO_REUSEPORT): (%d) %s\n", curtime(ctime), errno, strerror_r(errno, error, 64));
+        exit(errno);
+    }
 
     if (bind(udplsock, (struct sockaddr *)&udpladdr, sizeof(udpladdr)) == -1) {
         printf("[%s] [ERR] bind address: (%d) %s\n", curtime(ctime), errno, strerror_r(errno, error, 64));
@@ -493,6 +497,11 @@ void *service(void *arg) {
     int dnslsock = socket(AF_INET, SOCK_DGRAM, 0);
     evutil_make_socket_nonblocking(dnslsock);
     set_dns_lsock(dnslsock);
+
+    if (setsockopt(dnslsock, SOL_SOCKET, SO_REUSEPORT, &on, sizeof(on)) == -1) {
+        printf("[%s] [ERR] setsockopt(SO_REUSEPORT): (%d) %s\n", curtime(ctime), errno, strerror_r(errno, error, 64));
+        exit(errno);
+    }
 
     if (bind(dnslsock, (struct sockaddr *)&dnsladdr, sizeof(dnsladdr)) == -1) {
         printf("[%s] [ERR] bind address: (%d) %s\n", curtime(ctime), errno, strerror_r(errno, error, 64));

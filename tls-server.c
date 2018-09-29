@@ -272,6 +272,7 @@ void new_1streq_cb(struct bufferevent *bev, void *arg) {
 
         if (type_header == reqline) {
             type_header += strlen("ConnectionType: "); // move to value's pos
+            evbuffer_drain(input, evbuffer_get_length(input)); // delete remaining data
 
             // 长度不对
             if (strlen(type_header) < 25) {

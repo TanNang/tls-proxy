@@ -298,11 +298,11 @@ int main(int argc, char *argv[]) {
                 break;
             case '?':
                 if (strchr(optstr, optopt) == NULL) {
-                    fprintf(stderr, "unknown option '-%c'\n", optopt);
+                    printf("unknown option '-%c'\n", optopt);
                     PRINT_COMMAND_HELP;
                     return 1;
                 } else {
-                    fprintf(stderr, "missing optval '-%c'\n", optopt);
+                    printf("missing optval '-%c'\n", optopt);
                     PRINT_COMMAND_HELP;
                     return 1;
                 }
@@ -401,6 +401,26 @@ int main(int argc, char *argv[]) {
     return 0;
 }
 
+struct tcp_arg {
+    char                addr[16];
+    char                port[6];
+    struct bufferevent *bev;
+};
+
+struct udp_arg {
+    char  srcaddr[16];
+    int   srcport;
+    char  dstaddr[16];
+    int   dstport;
+    char *udpebuf;
+};
+
+struct dns_arg {
+    char  srcaddr[16];
+    int   srcport;
+    char *udpebuf;
+};
+
 /* TCP 相关回调 */
 void tcp_new_cb(struct evconnlistener *listener, int sock, struct sockaddr *addr, int addrlen, void *arg);
 void tcp_req_cb(struct bufferevent *bev, short events, void *arg);
@@ -466,7 +486,7 @@ void *service(void *arg) {
         exit(errno);
     }
 
-    struct event *udplev = event_new(base, udplsock, EV_READ | EV_PERSIST, udp_new_cb, NULL);
+    struct event *udplev = event_new(base, udplsock, EV_READ | EV_PERSIST, udp_new_cb, event_self_cbarg());
     event_add(udplev, NULL);
 
     // dns proxy
@@ -479,7 +499,7 @@ void *service(void *arg) {
         exit(errno);
     }
 
-    struct event *dnslev = event_new(base, dnslsock, EV_READ | EV_PERSIST, dns_new_cb, NULL);
+    struct event *dnslev = event_new(base, dnslsock, EV_READ | EV_PERSIST, dns_new_cb, event_self_cbarg());
     event_add(dnslev, NULL);
 
     // event loop ...
@@ -494,8 +514,541 @@ void *service(void *arg) {
     evconnlistener_free(tcplistener);
     event_base_free(base);
     libevent_global_shutdown();
-    SSL_SESSION_free(get_ssl_sess());
     SSL_CTX_free(ctx);
 
     return NULL;
+}
+
+void tcp_new_cb(struct evconnlistener *listener, int sock, struct sockaddr *addr, int addrlen, void *arg) {
+    (void) listener;
+    (void) sock;
+    (void) addr;
+    (void) addrlen;
+    (void) arg;
+
+    char ctime[20] = {0};
+    set_tcp_sockopt(sock);
+    struct sockaddr_in *clntaddr = (struct sockaddr_in *)addr;
+    printf("[%s] [INF] new connect: %s:%d\n", curtime(ctime), inet_ntoa(clntaddr->sin_addr), ntohs(clntaddr->sin_port));
+
+    struct sockaddr_in destaddr = {0};
+    getsockopt(sock, SOL_IP, SO_ORIGINAL_DST, &destaddr, (socklen_t *)&addrlen);
+    printf("[%s] [INF] dest address: %s:%d\n", curtime(ctime), inet_ntoa(destaddr.sin_addr), ntohs(destaddr.sin_port));
+
+    SSL *ssl = SSL_new(get_ssl_ctx());
+    SSL_set_tlsext_host_name(ssl, servhost);
+    X509_VERIFY_PARAM_set1_host(SSL_get0_param(ssl), servhost, 0);
+    if (get_ssl_sess() != NULL) SSL_set_session(ssl, get_ssl_sess());
+
+    struct bufferevent *clntbev = bufferevent_socket_new(evconnlistener_get_base(listener), sock, BEV_OPT_CLOSE_ON_FREE);
+    struct bufferevent *destbev = bufferevent_openssl_socket_new(evconnlistener_get_base(listener), -1, ssl, BUFFEREVENT_SSL_CONNECTING, BEV_OPT_CLOSE_ON_FREE);
+
+    struct tcp_arg *clntarg = calloc(1, sizeof(struct tcp_arg));
+    strcpy(clntarg->addr, inet_ntoa(destaddr.sin_addr));
+    sprintf(clntarg->port, "%d", ntohs(destaddr.sin_port));
+    clntarg->bev = destbev;
+
+    struct tcp_arg *destarg = calloc(1, sizeof(struct tcp_arg));
+    strcpy(destarg->addr, inet_ntoa(destaddr.sin_addr));
+    sprintf(destarg->port, "%d", ntohs(destaddr.sin_port));
+    destarg->bev = clntbev;
+
+    bufferevent_setcb(clntbev, NULL, NULL, tcp_req_cb, clntarg);
+    bufferevent_setcb(destbev, NULL, NULL, tcp_req_cb, destarg);
+    bufferevent_enable(clntbev, EV_WRITE);
+    bufferevent_enable(destbev, EV_READ | EV_WRITE);
+
+    printf("[%s] [INF] connecting to: %s:%d\n", curtime(ctime), servhost, servport);
+    bufferevent_socket_connect(destbev, (struct sockaddr *)&servaddr, sizeof(servaddr));
+    set_tcp_sockopt(bufferevent_getfd(destbev));
+}
+
+void tcp_req_cb(struct bufferevent *bev, short events, void *arg) {
+    (void) bev;
+    (void) events;
+    (void) arg;
+    char ctime[20] = {0};
+    struct tcp_arg *thisarg = arg;
+
+    if (events & BEV_EVENT_CONNECTED) {
+        printf("[%s] [INF] connected to %s:%d\n", curtime(ctime), servhost, servport);
+        printf("[%s] [INF] send request to %s:%d\n", curtime(ctime), servhost, servport);
+        bufferevent_write(bev, servreq, strlen(servreq));
+        bufferevent_write(bev, "ConnectionType: tcp; addr=", strlen("ConnectionType: tcp; addr="));
+        bufferevent_write(bev, thisarg->addr, strlen(thisarg->addr));
+        bufferevent_write(bev, "; port=", strlen("; port="));
+        bufferevent_write(bev, thisarg->port, strlen(thisarg->port));
+        bufferevent_write(bev, "\r\n\r\n", 4);
+        bufferevent_setcb(bev, tcp_res_cb, NULL, tcp_req_cb, arg);
+        if (get_ssl_sess() != NULL) SSL_SESSION_free(get_ssl_sess());
+        set_ssl_sess(SSL_get1_session(bufferevent_openssl_get_ssl(bev)));
+        return;
+    }
+
+    if (events & BEV_EVENT_ERROR) {
+        unsigned long sslerror = bufferevent_get_openssl_error(bev);
+        if (sslerror != 0) {
+            printf("[%s] [ERR] openssl error: (%lu) %s\n", curtime(ctime), sslerror, ERR_reason_error_string(sslerror));
+        } else {
+            char error[64] = {0};
+            printf("[%s] [ERR] socket error: (%d) %s\n", curtime(ctime), errno, strerror_r(errno, error, 64));
+        }
+    }
+
+    if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR)) {
+        struct sockaddr_in thisaddr = {0};
+        struct sockaddr_in othraddr = {0};
+        socklen_t addrlen = sizeof(struct sockaddr_in);
+        getpeername(bufferevent_getfd(bev),          (struct sockaddr *)&thisaddr, &addrlen);
+        getpeername(bufferevent_getfd(thisarg->bev), (struct sockaddr *)&othraddr, &addrlen);
+        if (memcmp(&thisaddr, &servaddr, addrlen) == 0) {
+            printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), servhost, servport);
+            printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), inet_ntoa(othraddr.sin_addr), ntohs(othraddr.sin_port));
+            SSL *ssl = bufferevent_openssl_get_ssl(bev);
+            SSL_set_shutdown(ssl, SSL_RECEIVED_SHUTDOWN);
+            SSL_shutdown(ssl);
+        } else {
+            printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), servhost, servport);
+            printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), inet_ntoa(thisaddr.sin_addr), ntohs(thisaddr.sin_port));
+        }
+        struct tcp_arg *othrarg = NULL;
+        bufferevent_getcb(thisarg->bev, NULL, NULL, NULL, (void **)&othrarg);
+        bufferevent_free(bev);
+        bufferevent_free(thisarg->bev);
+        free(thisarg);
+        free(othrarg);
+    }
+}
+
+void tcp_res_cb(struct bufferevent *bev, void *arg) {
+    (void) bev;
+    (void) arg;
+
+    char ctime[20] = {0};
+    struct tcp_arg *thisarg = arg;
+    struct evbuffer *input = bufferevent_get_input(bev);
+    char *statusline = evbuffer_readln(input, NULL, EVBUFFER_EOL_CRLF);
+    evbuffer_drain(input, evbuffer_get_length(input));
+
+    struct sockaddr_in clntaddr = {0};
+    socklen_t addrlen = sizeof(clntaddr);
+    getpeername(bufferevent_getfd(thisarg->bev), (struct sockaddr *)&clntaddr, &addrlen);
+
+    if (statusline == NULL || strcmp(statusline, WEBSOCKET_STATUS_LINE) != 0) {
+        free(statusline);
+        printf("[%s] [ERR] bad response: %s:%d\n",   curtime(ctime), servhost, servport);
+        printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), servhost, servport);
+        printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
+        SSL *ssl = bufferevent_openssl_get_ssl(bev);
+        SSL_set_shutdown(ssl, SSL_RECEIVED_SHUTDOWN);
+        SSL_shutdown(ssl);
+        struct tcp_arg *othrarg = NULL;
+        bufferevent_getcb(thisarg->bev, NULL, NULL, NULL, (void **)&othrarg);
+        bufferevent_free(bev);
+        bufferevent_free(thisarg->bev);
+        free(thisarg);
+        free(othrarg);
+        return;
+    }
+    free(statusline);
+
+    printf("[%s] [INF] forward data: %s:%d <-> %s:%s\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port), thisarg->addr, thisarg->port);
+    bufferevent_setcb(bev, tcp_fwd_cb, NULL, tcp_req_cb, arg);
+    struct tcp_arg *othrarg = NULL;
+    bufferevent_getcb(thisarg->bev, NULL, NULL, NULL, (void **)&othrarg);
+    bufferevent_setcb(thisarg->bev, tcp_fwd_cb, NULL, tcp_req_cb, othrarg);
+    bufferevent_enable(thisarg->bev, EV_READ | EV_WRITE);
+}
+
+void tcp_fwd_cb(struct bufferevent *bev, void *arg) {
+    bufferevent_write_buffer(((struct tcp_arg *)arg)->bev, bufferevent_get_input(bev));
+}
+
+void udp_new_cb(int sock, short events, void *arg) {
+    (void) sock;
+    (void) events;
+    (void) arg;
+    char ctime[20] = {0};
+    char error[64] = {0};
+    char control[64] = {0};
+
+    struct sockaddr_in clntaddr = {0};
+    socklen_t addrlen = sizeof(clntaddr);
+    struct iovec iov = {get_udp_rawbuf(), UDP_RAW_BUFSIZ};
+
+    struct msghdr msg;
+    msg.msg_name = &clntaddr;
+    msg.msg_namelen = addrlen;
+    msg.msg_control = control;
+    msg.msg_controllen = 64;
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_flags = 0;
+
+    int rawlen = recvmsg(sock, &msg, 0);
+    if (rawlen == -1) {
+        printf("[%s] [ERR] recv from %s:%d: (%d) %s\n", curtime(ctime), inet_ntoa(udpladdr.sin_addr), ntohs(udpladdr.sin_port), errno, strerror_r(errno, error, 64));
+        return;
+    }
+    printf("[%s] [INF] recv %d bytes data from %s:%d\n", curtime(ctime), rawlen, inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
+
+    int found = 0;
+    struct sockaddr_in destaddr = {0};
+    for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
+        if (cmsg->cmsg_level == SOL_IP && cmsg->cmsg_type == IP_RECVORIGDSTADDR) {
+            found = 1;
+            memcpy(&destaddr, CMSG_DATA(cmsg), addrlen);
+            break;
+        }
+    }
+    if (!found) {
+        printf("[%s] [ERR] can't get destaddr of %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
+        return;
+    }
+    printf("[%s] [INF] %s:%d destaddr is %s:%d\n", curtime(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port), inet_ntoa(destaddr.sin_addr), ntohs(destaddr.sin_port));
+
+    struct udp_arg *udparg = calloc(1, sizeof(struct udp_arg));
+    strcpy(udparg->srcaddr, inet_ntoa(clntaddr.sin_addr));
+    strcpy(udparg->dstaddr, inet_ntoa(destaddr.sin_addr));
+    udparg->srcport = ntohs(clntaddr.sin_port);
+    udparg->dstport = ntohs(destaddr.sin_port);
+    udparg->udpebuf = malloc(UDP_ENC_BUFSIZ);
+
+    size_t enclen = 0;
+    base64_encode(get_udp_rawbuf(), rawlen, udparg->udpebuf, &enclen, 0);
+    udparg->udpebuf[enclen] = 0;
+
+    SSL *ssl = SSL_new(get_ssl_ctx());
+    SSL_set_tlsext_host_name(ssl, servhost);
+    X509_VERIFY_PARAM_set1_host(SSL_get0_param(ssl), servhost, 0);
+    if (get_ssl_sess() != NULL) SSL_set_session(ssl, get_ssl_sess());
+
+    struct bufferevent *bev = bufferevent_openssl_socket_new(event_get_base(arg), -1, ssl, BUFFEREVENT_SSL_CONNECTING, BEV_OPT_CLOSE_ON_FREE);
+    bufferevent_setcb(bev, NULL, NULL, udp_req_cb, udparg);
+    bufferevent_enable(bev, EV_READ | EV_WRITE);
+    printf("[%s] [INF] connecting to %s:%d\n", curtime(ctime), servhost, servport);
+    bufferevent_socket_connect(bev, (struct sockaddr *)&servaddr, sizeof(servaddr));
+    set_tcp_sockopt(bufferevent_getfd(bev));
+}
+
+void udp_req_cb(struct bufferevent *bev, short events, void *arg) {
+    (void) bev;
+    (void) events;
+    (void) arg;
+
+    char ctime[20] = {0};
+    struct udp_arg *udparg = arg;
+
+    if (events & BEV_EVENT_CONNECTED) {
+        printf("[%s] [INF] connected to %s:%d\n",    curtime(ctime), servhost, servport);
+        printf("[%s] [INF] send request to %s:%d\n", curtime(ctime), servhost, servport);
+        bufferevent_write(bev, servreq, strlen(servreq));
+        bufferevent_write(bev, "ConnectionType: udp; addr=", strlen("ConnectionType: udp; addr="));
+        bufferevent_write(bev, udparg->dstaddr, strlen(udparg->dstaddr));
+        bufferevent_write(bev, "; port=", strlen("; port="));
+        char portstr[6] = {0};
+        sprintf(portstr, "%d", udparg->dstport);
+        bufferevent_write(bev, portstr, strlen(portstr));
+        bufferevent_write(bev, "; data=", strlen("; data="));
+        bufferevent_write(bev, udparg->udpebuf, strlen(udparg->udpebuf));
+        bufferevent_write(bev, "\r\n\r\n", 4);
+        free(udparg->udpebuf);
+        udparg->udpebuf = NULL;
+        bufferevent_setcb(bev, udp_res_cb, NULL, udp_req_cb, arg);
+        if (get_ssl_sess() != NULL) SSL_SESSION_free(get_ssl_sess());
+        set_ssl_sess(SSL_get1_session(bufferevent_openssl_get_ssl(bev)));
+        return;
+    }
+
+    if (events & BEV_EVENT_ERROR) {
+        unsigned long sslerror = bufferevent_get_openssl_error(bev);
+        if (sslerror != 0) {
+            printf("[%s] [ERR] openssl error: (%lu) %s\n", curtime(ctime), sslerror, ERR_reason_error_string(sslerror));
+        } else {
+            char error[64] = {0};
+            printf("[%s] [ERR] socket error: (%d) %s\n", curtime(ctime), errno, strerror_r(errno, error, 64));
+        }
+    }
+
+    if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR)) {
+        printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), servhost, servport);
+        SSL *ssl = bufferevent_openssl_get_ssl(bev);
+        SSL_set_shutdown(ssl, SSL_RECEIVED_SHUTDOWN);
+        SSL_shutdown(ssl);
+        bufferevent_free(bev);
+        free(udparg->udpebuf);
+        free(udparg);
+    }
+}
+
+void udp_res_cb(struct bufferevent *bev, void *arg) {
+    (void) bev;
+    (void) arg;
+
+    char ctime[20] = {0};
+    struct udp_arg *udparg = arg;
+
+    struct evbuffer *input = bufferevent_get_input(bev);
+    char *respline = evbuffer_readln(input, NULL, EVBUFFER_EOL_CRLF);
+
+    if (respline == NULL || strcmp(respline, WEBSOCKET_STATUS_LINE) != 0) {
+        printf("[%s] [ERR] bad response: %s:%d\n",   curtime(ctime), servhost, servport);
+        printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), servhost, servport);
+        free(udparg);
+        free(respline);
+        SSL *ssl = bufferevent_openssl_get_ssl(bev);
+        SSL_set_shutdown(ssl, SSL_RECEIVED_SHUTDOWN);
+        SSL_shutdown(ssl);
+        bufferevent_free(bev);
+        return;
+    }
+    free(respline);
+    
+    while ((respline = evbuffer_readln(input, NULL, EVBUFFER_EOL_CRLF)) != NULL) {
+        char *header = strstr(respline, "ConnectionType: ");
+        if (header == respline) {
+            header += strlen("ConnectionType: ");
+            size_t rawlen = 0;
+            if (base64_decode(header, strlen(header), get_udp_rawbuf(), &rawlen, 0) != 1) {
+                printf("[%s] [ERR] bad response: %s:%d\n", curtime(ctime), servhost, servport);
+                printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), servhost, servport);
+                free(udparg);
+                free(respline);
+                SSL *ssl = bufferevent_openssl_get_ssl(bev);
+                SSL_set_shutdown(ssl, SSL_RECEIVED_SHUTDOWN);
+                SSL_shutdown(ssl);
+                bufferevent_free(bev);
+                return;
+            }
+            free(respline);
+
+            struct sockaddr_in clntaddr = {0};
+            clntaddr.sin_family = AF_INET;
+            clntaddr.sin_addr.s_addr = inet_addr(udparg->srcaddr);
+            clntaddr.sin_port = htons(udparg->srcport);
+
+            struct sockaddr_in destaddr = {0};
+            destaddr.sin_family = AF_INET;
+            destaddr.sin_addr.s_addr = inet_addr(udparg->dstaddr);
+            destaddr.sin_port = htons(udparg->dstport);
+
+            int destsock = socket(AF_INET, SOCK_DGRAM, 0);
+            evutil_make_socket_nonblocking(destsock);
+
+            int on = 1;
+            setsockopt(destsock, SOL_IP, IP_TRANSPARENT, &on, sizeof(on));
+
+            if (bind(destsock, (struct sockaddr *)&destaddr, sizeof(destaddr)) == -1) {
+                char error[64] = {0};
+                printf("[%s] [ERR] bind socket: (%d) %s\n", curtime(ctime), errno, strerror_r(errno, error, 64));
+                printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), servhost, servport);
+                free(udparg);
+                close(destsock);
+                SSL *ssl = bufferevent_openssl_get_ssl(bev);
+                SSL_set_shutdown(ssl, SSL_RECEIVED_SHUTDOWN);
+                SSL_shutdown(ssl);
+                bufferevent_free(bev);
+                return;
+            }
+
+            if (sendto(destsock, get_udp_rawbuf(), rawlen, 0, (struct sockaddr *)&clntaddr, sizeof(clntaddr)) == -1) {
+                char error[64] = {0};
+                printf("[%s] [ERR] sendto socket: (%d) %s\n", curtime(ctime), errno, strerror_r(errno, error, 64));
+                printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), servhost, servport);
+                free(udparg);
+                close(destsock);
+                SSL *ssl = bufferevent_openssl_get_ssl(bev);
+                SSL_set_shutdown(ssl, SSL_RECEIVED_SHUTDOWN);
+                SSL_shutdown(ssl);
+                bufferevent_free(bev);
+                return;
+            }
+            printf("[%s] [INF] send %ld bytes data to %s:%d\n", curtime(ctime), rawlen, udparg->srcaddr, udparg->srcport);
+
+            printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), servhost, servport);
+            free(udparg);
+            close(destsock);
+            SSL *ssl = bufferevent_openssl_get_ssl(bev);
+            SSL_set_shutdown(ssl, SSL_RECEIVED_SHUTDOWN);
+            SSL_shutdown(ssl);
+            bufferevent_free(bev);
+            return;
+        }
+        free(respline);
+    }
+
+    printf("[%s] [ERR] bad response: %s:%d\n",   curtime(ctime), servhost, servport);
+    printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), servhost, servport);
+    SSL *ssl = bufferevent_openssl_get_ssl(bev);
+    SSL_set_shutdown(ssl, SSL_RECEIVED_SHUTDOWN);
+    SSL_shutdown(ssl);
+    bufferevent_free(bev);
+    free(udparg);
+    return;
+}
+
+void dns_new_cb(int sock, short events, void *arg) {
+    (void) sock;
+    (void) events;
+    (void) arg;
+    char ctime[20] = {0};
+    char error[64] = {0};
+
+    struct sockaddr_in clntaddr = {0};
+    socklen_t addrlen = sizeof(clntaddr);
+    int rawlen = recvfrom(sock, get_udp_rawbuf(), UDP_RAW_BUFSIZ, 0, (struct sockaddr *)&clntaddr, &addrlen);
+    if (rawlen == -1) {
+        printf("[%s] [ERR] recv from %s:%d: (%d) %s\n", curtime(ctime), inet_ntoa(dnsladdr.sin_addr), ntohs(dnsladdr.sin_port), errno, strerror_r(errno, error, 64));
+        return;
+    }
+    printf("[%s] [INF] recv %d bytes data from %s:%d\n", curtime(ctime), rawlen, inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
+
+    struct dns_arg *dnsarg = calloc(1, sizeof(struct dns_arg));
+    strcpy(dnsarg->srcaddr, inet_ntoa(clntaddr.sin_addr));
+    dnsarg->srcport = ntohs(clntaddr.sin_port);
+    dnsarg->udpebuf = malloc(UDP_ENC_BUFSIZ);
+
+    size_t enclen = 0;
+    base64_encode(get_udp_rawbuf(), rawlen, dnsarg->udpebuf, &enclen, 0);
+    dnsarg->udpebuf[enclen] = 0;
+
+    SSL *ssl = SSL_new(get_ssl_ctx());
+    SSL_set_tlsext_host_name(ssl, servhost);
+    X509_VERIFY_PARAM_set1_host(SSL_get0_param(ssl), servhost, 0);
+    if (get_ssl_sess() != NULL) SSL_set_session(ssl, get_ssl_sess());
+
+    struct bufferevent *bev = bufferevent_openssl_socket_new(event_get_base(arg), -1, ssl, BUFFEREVENT_SSL_CONNECTING, BEV_OPT_CLOSE_ON_FREE);
+    bufferevent_setcb(bev, NULL, NULL, dns_req_cb, dnsarg);
+    bufferevent_enable(bev, EV_READ | EV_WRITE);
+    printf("[%s] [INF] connecting to %s:%d\n", curtime(ctime), servhost, servport);
+    bufferevent_socket_connect(bev, (struct sockaddr *)&servaddr, sizeof(servaddr));
+    set_tcp_sockopt(bufferevent_getfd(bev));
+}
+
+void dns_req_cb(struct bufferevent *bev, short events, void *arg) {
+    (void) bev;
+    (void) events;
+    (void) arg;
+
+    char ctime[20] = {0};
+    struct dns_arg *dnsarg = arg;
+
+    if (events & BEV_EVENT_CONNECTED) {
+        printf("[%s] [INF] connected to %s:%d\n",    curtime(ctime), servhost, servport);
+        printf("[%s] [INF] send request to %s:%d\n", curtime(ctime), servhost, servport);
+        bufferevent_write(bev, servreq, strlen(servreq));
+        bufferevent_write(bev, "ConnectionType: udp; addr=", strlen("ConnectionType: udp; addr="));
+        bufferevent_write(bev, dnsraddr, strlen(dnsraddr));
+        bufferevent_write(bev, "; port=", strlen("; port="));
+        bufferevent_write(bev, dnsrport, strlen(dnsrport));
+        bufferevent_write(bev, "; data=", strlen("; data="));
+        bufferevent_write(bev, dnsarg->udpebuf, strlen(dnsarg->udpebuf));
+        bufferevent_write(bev, "\r\n\r\n", 4);
+        free(dnsarg->udpebuf);
+        dnsarg->udpebuf = NULL;
+        bufferevent_setcb(bev, dns_res_cb, NULL, dns_req_cb, arg);
+        if (get_ssl_sess() != NULL) SSL_SESSION_free(get_ssl_sess());
+        set_ssl_sess(SSL_get1_session(bufferevent_openssl_get_ssl(bev)));
+        return;
+    }
+
+    if (events & BEV_EVENT_ERROR) {
+        unsigned long sslerror = bufferevent_get_openssl_error(bev);
+        if (sslerror != 0) {
+            printf("[%s] [ERR] openssl error: (%lu) %s\n", curtime(ctime), sslerror, ERR_reason_error_string(sslerror));
+        } else {
+            char error[64] = {0};
+            printf("[%s] [ERR] socket error: (%d) %s\n", curtime(ctime), errno, strerror_r(errno, error, 64));
+        }
+    }
+
+    if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR)) {
+        printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), servhost, servport);
+        SSL *ssl = bufferevent_openssl_get_ssl(bev);
+        SSL_set_shutdown(ssl, SSL_RECEIVED_SHUTDOWN);
+        SSL_shutdown(ssl);
+        bufferevent_free(bev);
+        free(dnsarg->udpebuf);
+        free(dnsarg);
+    }
+}
+
+void dns_res_cb(struct bufferevent *bev, void *arg) {
+    (void) bev;
+    (void) arg;
+
+    char ctime[20] = {0};
+    struct dns_arg *dnsarg = arg;
+
+    struct evbuffer *input = bufferevent_get_input(bev);
+    char *respline = evbuffer_readln(input, NULL, EVBUFFER_EOL_CRLF);
+
+    if (respline == NULL || strcmp(respline, WEBSOCKET_STATUS_LINE) != 0) {
+        printf("[%s] [ERR] bad response: %s:%d\n",   curtime(ctime), servhost, servport);
+        printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), servhost, servport);
+        free(dnsarg);
+        free(respline);
+        SSL *ssl = bufferevent_openssl_get_ssl(bev);
+        SSL_set_shutdown(ssl, SSL_RECEIVED_SHUTDOWN);
+        SSL_shutdown(ssl);
+        bufferevent_free(bev);
+        return;
+    }
+    free(respline);
+    
+    while ((respline = evbuffer_readln(input, NULL, EVBUFFER_EOL_CRLF)) != NULL) {
+        char *header = strstr(respline, "ConnectionType: ");
+        if (header == respline) {
+            header += strlen("ConnectionType: ");
+            size_t rawlen = 0;
+            if (base64_decode(header, strlen(header), get_udp_rawbuf(), &rawlen, 0) != 1) {
+                printf("[%s] [ERR] bad response: %s:%d\n", curtime(ctime), servhost, servport);
+                printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), servhost, servport);
+                free(dnsarg);
+                free(respline);
+                SSL *ssl = bufferevent_openssl_get_ssl(bev);
+                SSL_set_shutdown(ssl, SSL_RECEIVED_SHUTDOWN);
+                SSL_shutdown(ssl);
+                bufferevent_free(bev);
+                return;
+            }
+            free(respline);
+
+            struct sockaddr_in clntaddr = {0};
+            clntaddr.sin_family = AF_INET;
+            clntaddr.sin_addr.s_addr = inet_addr(dnsarg->srcaddr);
+            clntaddr.sin_port = htons(dnsarg->srcport);
+
+            if (sendto(get_dns_lsock(), get_udp_rawbuf(), rawlen, 0, (struct sockaddr *)&clntaddr, sizeof(clntaddr)) == -1) {
+                char error[64] = {0};
+                printf("[%s] [ERR] sendto socket: (%d) %s\n", curtime(ctime), errno, strerror_r(errno, error, 64));
+                printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), servhost, servport);
+                SSL *ssl = bufferevent_openssl_get_ssl(bev);
+                SSL_set_shutdown(ssl, SSL_RECEIVED_SHUTDOWN);
+                SSL_shutdown(ssl);
+                bufferevent_free(bev);
+                free(dnsarg);
+                return;
+            }
+            printf("[%s] [INF] send %ld bytes data to %s:%d\n", curtime(ctime), rawlen, dnsarg->srcaddr, dnsarg->srcport);
+
+            printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), servhost, servport);
+            SSL *ssl = bufferevent_openssl_get_ssl(bev);
+            SSL_set_shutdown(ssl, SSL_RECEIVED_SHUTDOWN);
+            SSL_shutdown(ssl);
+            bufferevent_free(bev);
+            free(dnsarg);
+            return;
+        }
+        free(respline);
+    }
+
+    printf("[%s] [ERR] bad response: %s:%d\n",   curtime(ctime), servhost, servport);
+    printf("[%s] [INF] closed connect: %s:%d\n", curtime(ctime), servhost, servport);
+    SSL *ssl = bufferevent_openssl_get_ssl(bev);
+    SSL_set_shutdown(ssl, SSL_RECEIVED_SHUTDOWN);
+    SSL_shutdown(ssl);
+    bufferevent_free(bev);
+    free(dnsarg);
+    return;
 }

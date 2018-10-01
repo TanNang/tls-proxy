@@ -4,6 +4,16 @@
 
 同时，tls-proxy 也是专门为 [ss-tproxy](https://github.com/zfl9/ss-tproxy) 编写的，因为我只写了 linux 平台的 client 以及 server。`tls-client` 只提供 3 个代理端口：`redir`（代理 TCP）、`tproxy`（代理 UDP）、`tunnel`（代理 DNS）。这么做的目的很简单：安全高效的全局透明代理。
 
+## 相关依赖
+**`tls-server`**：
+ - [base64](https://github.com/aklomp/base64)
+ - [libevent](https://github.com/libevent/libevent)
+
+**`tls-client`**
+ - [base64](https://github.com/aklomp/base64)
+ - [openssl](https://github.com/openssl/openssl)
+ - [libevent](https://github.com/libevent/libevent)
+
 ## 如何编译
 ```bash
 ## base64-library

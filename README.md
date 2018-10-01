@@ -15,6 +15,43 @@
  - [libevent](https://github.com/libevent/libevent)
 
 ## 如何编译
+> 这里以 linux x86_64 为例，其他平台请酌情修改。
+
 ```bash
-// TODO
+# base64
+cd /tmp
+git clone https://github.com/aklomp/base64
+cd base64
+make
+
+# openssl
+cd /tmp
+wget https://www.openssl.org/source/openssl-1.1.0i.tar.gz
+tar xvf openssl-1.1.0i.tar.gz
+cd openssl-1.1.0i
+./Configure linux-x86_64 --prefix=/tmp/openssl --openssldir=/tmp/openssl no-ssl2 no-ssl3 no-shared
+make && make install
+
+# libevent
+cd /tmp
+wget https://github.com/libevent/libevent/releases/download/release-2.1.8-stable/libevent-2.1.8-stable.tar.gz 
+tar xvf libevent-2.1.8-stable.tar.gz
+cd libevent-2.1.8-stable
+./configure --prefix=/tmp/libevent --enable-static=yes --enable-shared=no CPPFLAGS='-I/tmp/openssl/include' LDFLAGS='-L/tmp/openssl/lib' LIBS='-ldl -lssl -lcrypto'
+make && make install
+
+# tls-proxy
+cd /tmp
+git clone https://github.com/zfl9/tls-proxy
+cd tls-proxy
+gcc -I/tmp/base64/include -I/tmp/libevent/include -std=c11 -Wall -Wextra -Os -s -lpthread -o tls-server tls-server.c /tmp/base64/lib/libbase64.o /tmp/libevent/lib/libevent.a
+gcc -I/tmp/base64/include -I/tmp/libevent/include -I/tmp/openssl/include -std=c11 -Wall -Wextra -Os -s -ldl -lpthread -o tls-client tls-client.c /tmp/base64/lib/libbase64.o /tmp/libevent/lib/libevent.a /tmp/libevent/lib/libevent_openssl.a /tmp/openssl/lib/libssl.a /tmp/openssl/lib/libcrypto.a
+cp -af tls-client tls-server /usr/local/bin
+
+# delete files
+cd /
+rm -fr /tmp/base64
+rm -fr /tmp/openssl*
+rm -fr /tmp/libevent*
+rm -fr /tmp/tls-proxy
 ```

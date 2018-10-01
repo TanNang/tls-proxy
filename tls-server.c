@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <unistd.h>
+#include <signal.h>
 #include <errno.h>
 #include <pthread.h>
 #include <sys/types.h>
@@ -112,6 +113,9 @@ void set_tcp_sockopt(int sock) {
 }
 
 int main(int argc, char *argv[]) {
+    // 忽略 SIGPIPE 信号
+    signal(SIGPIPE, SIG_IGN);
+
     // options default value
     char *listen_addr = "127.0.0.1";
     int   listen_port = 60080;

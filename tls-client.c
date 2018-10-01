@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <signal.h>
 #include <errno.h>
 #include <pthread.h>
 #include <sys/stat.h>
@@ -206,6 +207,9 @@ void set_tcp_sockopt(int sock) {
 void *service(void *arg);
 
 int main(int argc, char *argv[]) {
+    // 忽略 SIGPIPE 信号
+    signal(SIGPIPE, SIG_IGN);
+
     /* 选项默认值 */
     char *request_uripath = NULL;
     char *request_headers = NULL;

@@ -30,6 +30,8 @@
 
 #define WEBSOCKET_RESPONSE "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
 
+#define BUFSIZ_FOR_BEV 524288 // 512k
+
 #define UDP_RAW_BUFSIZ 1472
 #define UDP_ENC_BUFSIZ 1960
 struct udp_arg {
@@ -54,6 +56,8 @@ void new_events_cb(struct bufferevent *bev, short events, void *arg);
 void tcp_datfwd_cb(struct bufferevent *bev, void *arg);
 // [tcp request] events callback
 void tcp_events_cb(struct bufferevent *bev, short events, void *arg);
+// [tcp request] delete callback
+void tcp_delete_cb(struct bufferevent *bev, void *arg);
 
 // [udp request] rcvres callback
 void udp_rcvres_cb(int sock, short events, void *arg);
@@ -225,6 +229,7 @@ void new_accept_cb(struct evconnlistener *listener, int sock, struct sockaddr *a
     struct bufferevent *clntbev = bufferevent_socket_new(evconnlistener_get_base(listener), sock, BEV_OPT_CLOSE_ON_FREE);
     bufferevent_setcb(clntbev, new_1streq_cb, NULL, new_events_cb, NULL);
     bufferevent_enable(clntbev, EV_READ | EV_WRITE);
+    bufferevent_setwatermark(clntbev, EV_READ, 0, BUFSIZ_FOR_BEV);
 }
 
 void new_events_cb(struct bufferevent *bev, short events, void *arg) {
@@ -354,12 +359,14 @@ void new_1streq_cb(struct bufferevent *bev, void *arg) {
                 struct bufferevent *destbev = bufferevent_socket_new(bufferevent_get_base(bev), -1, BEV_OPT_CLOSE_ON_FREE);
                 bufferevent_setcb(destbev, NULL, NULL, tcp_events_cb, bev);
                 bufferevent_enable(destbev, EV_READ | EV_WRITE);
+                bufferevent_setwatermark(destbev, EV_READ, 0, BUFSIZ_FOR_BEV);
+                printf("[%s] [INF] connecting to %s:%s\n", curtime(ctime), addrptr, portptr);
                 bufferevent_socket_connect(destbev, (struct sockaddr *)&destaddr, sizeof(destaddr));
                 set_tcp_sockopt(bufferevent_getfd(destbev));
-                printf("[%s] [INF] connecting to %s:%s\n", curtime(ctime), addrptr, portptr);
 
                 // 设置 BEV
                 bufferevent_setcb(bev, NULL, NULL, tcp_events_cb, destbev);
+                bufferevent_disable(bev, EV_READ);
 
                 free(reqline);
                 return;
@@ -513,7 +520,22 @@ void new_1streq_cb(struct bufferevent *bev, void *arg) {
 }
 
 void tcp_datfwd_cb(struct bufferevent *bev, void *arg) {
-    bufferevent_write_buffer(arg, bufferevent_get_input(bev));
+    struct evbuffer *input = bufferevent_get_input(bev);
+    struct evbuffer *output = bufferevent_get_output(arg);
+
+    evbuffer_add_buffer(output, input);
+
+    if (evbuffer_get_length(output) >= BUFSIZ_FOR_BEV) {
+        bufferevent_setcb(arg, tcp_datfwd_cb, tcp_delete_cb, tcp_events_cb, bev);
+        bufferevent_setwatermark(arg, EV_WRITE, BUFSIZ_FOR_BEV / 2, 0);
+        bufferevent_disable(bev, EV_READ);
+    }
+}
+
+void tcp_delete_cb(struct bufferevent *bev, void *arg) {
+    bufferevent_setcb(bev, tcp_datfwd_cb, NULL, tcp_events_cb, arg);
+    bufferevent_setwatermark(bev, EV_WRITE, 0, 0);
+    bufferevent_enable(arg, EV_READ);
 }
 
 void tcp_events_cb(struct bufferevent *bev, short events, void *arg) {
@@ -529,6 +551,7 @@ void tcp_events_cb(struct bufferevent *bev, short events, void *arg) {
         bufferevent_write(arg, WEBSOCKET_RESPONSE, strlen(WEBSOCKET_RESPONSE));
         bufferevent_setcb(bev, tcp_datfwd_cb, NULL, tcp_events_cb, arg);
         bufferevent_setcb(arg, tcp_datfwd_cb, NULL, tcp_events_cb, bev);
+        bufferevent_enable(arg, EV_READ);
         return;
     }
 

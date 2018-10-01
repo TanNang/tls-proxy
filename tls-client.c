@@ -42,6 +42,7 @@
            " -v                      show current version and exit\n"\
            " -h                      show current message and exit\n")
 
+#define BUFSIZ_FOR_BEV 524288 // 512k
 #define UDP_RAW_BUFSIZ 1472
 #define UDP_ENC_BUFSIZ 1960
 #define WEBSOCKET_STATUS_LINE "HTTP/1.1 101 Switching Protocols"
@@ -426,6 +427,7 @@ void tcp_new_cb(struct evconnlistener *listener, int sock, struct sockaddr *addr
 void tcp_req_cb(struct bufferevent *bev, short events, void *arg);
 void tcp_res_cb(struct bufferevent *bev, void *arg);
 void tcp_fwd_cb(struct bufferevent *bev, void *arg);
+void tcp_del_cb(struct bufferevent *bev, void *arg);
 
 /* UDP 相关回调 */
 void udp_new_cb(int sock, short events, void *arg);
@@ -567,6 +569,9 @@ void tcp_new_cb(struct evconnlistener *listener, int sock, struct sockaddr *addr
     bufferevent_enable(clntbev, EV_WRITE);
     bufferevent_enable(destbev, EV_READ | EV_WRITE);
 
+    bufferevent_setwatermark(clntbev, EV_READ, 0, BUFSIZ_FOR_BEV);
+    bufferevent_setwatermark(destbev, EV_READ, 0, BUFSIZ_FOR_BEV);
+
     printf("[%s] [INF] connecting to: %s:%d\n", curtime(ctime), servhost, servport);
     bufferevent_socket_connect(destbev, (struct sockaddr *)&servaddr, sizeof(servaddr));
     set_tcp_sockopt(bufferevent_getfd(destbev));
@@ -670,7 +675,26 @@ void tcp_res_cb(struct bufferevent *bev, void *arg) {
 }
 
 void tcp_fwd_cb(struct bufferevent *bev, void *arg) {
-    bufferevent_write_buffer(((struct tcp_arg *)arg)->bev, bufferevent_get_input(bev));
+    struct tcp_arg *thisarg = arg;
+    struct evbuffer *input = bufferevent_get_input(bev);
+    struct evbuffer *output = bufferevent_get_output(thisarg->bev);
+
+    evbuffer_add_buffer(output, input);
+
+    if (evbuffer_get_length(output) >= BUFSIZ_FOR_BEV) {
+        struct tcp_arg *othrarg = NULL;
+        bufferevent_getcb(thisarg->bev, NULL, NULL, NULL, (void **)&othrarg);
+        bufferevent_setcb(thisarg->bev, tcp_fwd_cb, tcp_del_cb, tcp_req_cb, othrarg);
+        bufferevent_setwatermark(thisarg->bev, EV_WRITE, BUFSIZ_FOR_BEV / 2, 0);
+        bufferevent_disable(bev, EV_READ);
+    }
+}
+
+void tcp_del_cb(struct bufferevent *bev, void *arg) {
+    struct tcp_arg *thisarg = arg;
+    bufferevent_setcb(bev, tcp_fwd_cb, NULL, tcp_req_cb, arg);
+    bufferevent_setwatermark(bev, EV_WRITE, 0, 0);
+    bufferevent_enable(thisarg->bev, EV_READ);
 }
 
 void udp_new_cb(int sock, short events, void *arg) {

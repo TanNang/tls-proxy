@@ -1,6 +1,6 @@
 # TLS-Proxy
 ## 简要介绍
-`tls-proxy` 可以看作为 V2Ray 的 `WebSocket + TLS + Web` 方案的 C 语言极简实现版，使用 `libevent2` 事件通知库编写，在硬件资源有限的环境中（如树莓派 3B），可以比 v2ray 工作的更好，速度更快，内存占用更少。
+`tls-proxy` 可以看作为 V2Ray 的 `WebSocket + TLS + Web` 方案的 C 语言极简实现版，使用 `libevent2` 轻量事件通知库编写，与 V2Ray 相比，tls-proxy 可以在硬件资源有限的环境中（如树莓派 3B，没错，这也是我写 tls-proxy 的根本目的）占用更少的 CPU 和内存资源，并且提供更快的代理速度以及响应速度。
 
 ## 如何编译
 ```bash

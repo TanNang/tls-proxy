@@ -15,7 +15,7 @@
  - [libevent](https://github.com/libevent/libevent)
 
 ## 如何编译
-> 这里以 linux x86_64 为例，其他平台请酌情修改。
+> 这里以 linux x86_64 为例，其他平台请酌情修改（貌似需要安装 `openssl-dev`、`openssl-devel`？）。
 
 ```bash
 # base64
@@ -29,7 +29,7 @@ cd /tmp
 wget https://www.openssl.org/source/openssl-1.1.0i.tar.gz
 tar xvf openssl-1.1.0i.tar.gz
 cd openssl-1.1.0i
-./Configure linux-x86_64 --prefix=/tmp/openssl --openssldir=/tmp/openssl no-ssl2 no-ssl3 no-shared
+./Configure linux-x86_64 --prefix=/tmp/openssl --openssldir=/tmp/openssl no-ssl3 no-shared
 make && make install
 
 # libevent
@@ -57,6 +57,6 @@ rm -fr /tmp/tls-proxy
 ```
 
 ### 已知问题
-- 目前的 UDP 实现仅适用于 `request-response` 类型的协议，如 DNS，而 QUIC 暂时不支持。
+- 目前的 UDP 实现仅适用于 `request-response` 类型的协议，如 DNS，QUIC 暂时不支持。
 - 程序使用了 `inet_ntoa()` 非线程安全函数，虽然这只会影响程序输出，但是还是有点不爽。
 - 代码很简陋，毕竟我也是刚接触 C 语言不久；另外最近没啥时间，上述问题暂时没有时间修。

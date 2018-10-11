@@ -108,20 +108,6 @@ void udpnode_del(UDPNode *hash, int port) {
     free(node);
 } 
 
-// keep head elem
-void udpnode_empty(UDPNode *hash) {
-    UDPNode *head = hash->hh.next;
-    UDPNode *node = NULL, *temp = NULL;
-    HASH_ITER(hh, head, node, temp) {
-        HASH_DEL(hash, node);
-        free(event_get_callback_arg(node->ev));
-        close(event_get_fd(node->ev));
-        event_free(node->ev);
-        free(node);
-    }
-}
-
-// free head elem
 void udpnode_clear(UDPNode *hash) {
     UDPNode *node = NULL, *temp = NULL;
     HASH_ITER(hh, hash, node, temp) {
@@ -135,31 +121,27 @@ void udpnode_clear(UDPNode *hash) {
     }
 }
 
-char *loginf(char *str) { // sizeof(str) = 36
+// sizeof(str) = 36
+char *loginf(char *str) {
     time_t rawtime;
     time(&rawtime);
-
     struct tm curtm;
     localtime_r(&rawtime, &curtm);
-
     sprintf(str, "\e[1;32m%04d-%02d-%02d %02d:%02d:%02d INF:\e[0m",
             curtm.tm_year + 1900, curtm.tm_mon + 1, curtm.tm_mday,
             curtm.tm_hour,        curtm.tm_min,     curtm.tm_sec);
-
     return str;
 }
 
-char *logerr(char *str) { // sizeof(str) = 36
+// sizeof(str) = 36
+char *logerr(char *str) {
     time_t rawtime;
     time(&rawtime);
-
     struct tm curtm;
     localtime_r(&rawtime, &curtm);
-
     sprintf(str, "\e[1;35m%04d-%02d-%02d %02d:%02d:%02d ERR:\e[0m",
             curtm.tm_year + 1900, curtm.tm_mon + 1, curtm.tm_mday,
             curtm.tm_hour,        curtm.tm_min,     curtm.tm_sec);
-
     return str;
 }
 
@@ -253,11 +235,10 @@ int main(int argc, char *argv[]) {
     printf("%s [srv] thread numbers: %d\n", loginf(ctime), thread_nums);
     printf("%s [srv] listen address: %s:%d\n", loginf(ctime), listen_addr, listen_port);
 
-    char error[64] = {0};
     pthread_t tids[--thread_nums];
     for (int i = 0; i < thread_nums; ++i) {
         if (pthread_create(tids + i, NULL, service, NULL) != 0) {
-            printf("%s [srv] create thread: (%d) %s\n", logerr(ctime), errno, strerror_r(errno, error, 64));
+            printf("%s [srv] create thread: (%d) %s\n", logerr(ctime), errno, strerror(errno));
             return errno;
         }
     }
@@ -761,6 +742,9 @@ void udp_response_cb(int sock, short events, void *arg) {
     bufferevent_write(udparg->bev, ":", 1);
     bufferevent_write(udparg->bev, encbuf, strlen(encbuf));
     bufferevent_write(udparg->bev, "\r\n", 2);
-    printf("%s [udp] send %d bytes data to %s:%s\n", loginf(ctime), rawlen, udparg->addr, udparg->port);
     free(encbuf);
+
+    memset(&destaddr, 0, addrlen);
+    getpeername(bufferevent_getfd(udparg->bev), (struct sockaddr *)&destaddr, &addrlen);
+    printf("%s [udp] send %d bytes data to %s:%d\n", loginf(ctime), rawlen, inet_ntoa(destaddr.sin_addr), ntohs(destaddr.sin_port));
 }

@@ -54,6 +54,7 @@ void tcp_overbuf_cb(struct bufferevent *bev, void *arg);
 
 void udp_events_cb(struct bufferevent *bev, short events, void *arg);
 void udp_estabed_cb(struct bufferevent *bev, void *arg);
+void udp_timeout_cb(int sock, short events, void *arg);
 void udp_request_cb(int sock, short events, void *arg);
 void udp_response_cb(struct bufferevent *bev, void *arg);
 
@@ -63,6 +64,72 @@ typedef struct {
     struct bufferevent *bev;
 } TCPArg;
 
+typedef struct {
+    char           addr[22];
+    int            port;
+    struct event  *ev;
+    UT_hash_handle hh;
+} UDPNode;
+
+/* UDP Proxy 全局数据 */
+static void               *udprbuff    = NULL;
+static char               *udpebuff    = NULL;
+static int                 udplsock    = -1;
+static struct event       *udplev      = NULL;
+static struct bufferevent *udpbev      = NULL;
+static UDPNode            *udphash     = NULL;
+static struct event_base  *udpbase     = NULL;
+static char                udpcntl[64] = {0};
+
+void udpnode_put(char *addr, int port) {
+    UDPNode *node = NULL;
+    HASH_FIND_STR(udphash, addr, node);
+    if (node == NULL) {
+        node = calloc(1, sizeof(UDPNode));
+        strcpy(node->addr, addr);
+        node->port = port;
+        node->ev = event_new(udpbase, -1, EV_TIMEOUT, udp_timeout_cb, node->addr);
+        struct timeval tv = {5 * 60, 0}; // 300s timeout
+        event_add(node->ev, &tv);
+        HASH_ADD_STR(udphash, addr, node);
+    } else {
+        node->port = port;
+        struct timeval tv = {5 * 60, 0}; // 300s timeout
+        event_add(node->ev, &tv);
+    }
+}
+
+UDPNode *udpnode_get(char *addr) {
+    UDPNode *node = NULL;
+    HASH_FIND_STR(udphash, addr, node);
+    if (node == NULL) return node;
+    struct timeval tv = {5 * 60, 0}; // 300s timeout
+    event_add(node->ev, &tv);
+    return node;
+}
+
+int udpnode_getport(char *addr) {
+    UDPNode *node = udpnode_get(addr);
+    return (node == NULL) ? 0 : (node->port);
+}
+
+void udpnode_del(char *addr) {
+    UDPNode *node = udpnode_get(addr);
+    if (node == NULL) return;
+    HASH_DEL(udphash, node);
+    event_free(node->ev);
+    free(node);
+}
+
+void udpnode_clear() {
+    UDPNode *node = NULL, *temp = NULL;
+    HASH_ITER(hh, udphash, node, temp) {
+        HASH_DEL(udphash, node);
+        event_free(node->ev);
+        free(node);
+    }
+}
+
 /* 线程共享的全局数据 */
 static char               *servhost     = NULL;
 static int                 servport     = 443;
@@ -71,13 +138,6 @@ static char               *cafile       = NULL;
 static char                servreq[256] = {0};
 static struct sockaddr_in  tcpladdr     = {0};
 static struct sockaddr_in  udpladdr     = {0};
-
-/* UDP Proxy 全局数据 */
-static void               *udprbuff = NULL;
-static char               *udpebuff = NULL;
-static int                 udplsock = -1;
-static struct event       *udplev   = NULL;
-static struct bufferevent *udpbev   = NULL;
 
 /* 线程私有的全局数据 */
 typedef struct {
@@ -370,6 +430,7 @@ void *service(void *arg) {
     event_config_set_flag(cfg, EVENT_BASE_FLAG_NOLOCK | EVENT_BASE_FLAG_IGNORE_ENV);
     struct event_base *base = event_base_new_with_config(cfg);
     event_config_free(cfg);
+    if (arg == (void *)1) udpbase = base;
 
     struct evconnlistener *tcplistener = evconnlistener_new_bind(
             base, tcp_newconn_cb, NULL,
@@ -423,6 +484,7 @@ void *service(void *arg) {
     event_base_dispatch(base);
 
     if (arg == (void *)1) {
+        udpnode_clear();
         close(udplsock);
         event_free(udplev);
         bufferevent_free(udpbev);
@@ -592,4 +654,326 @@ void tcp_recvres_cb(struct bufferevent *bev, void *arg) {
     bufferevent_enable(thisarg->bev, EV_READ | EV_WRITE);
 }
 
-// TODO
+void tcp_forward_cb(struct bufferevent *bev, void *arg) {
+    TCPArg *thisarg = arg;
+    struct evbuffer *input = bufferevent_get_input(bev);
+    struct evbuffer *output = bufferevent_get_output(thisarg->bev);
+
+    evbuffer_add_buffer(output, input);
+
+    if (evbuffer_get_length(output) >= BUFSIZ_FOR_BEV) {                             
+        TCPArg *othrarg = NULL;
+        bufferevent_getcb(thisarg->bev, NULL, NULL, NULL, (void **)&othrarg);
+        bufferevent_setcb(thisarg->bev, tcp_forward_cb, tcp_overbuf_cb, tcp_sendreq_cb, othrarg);
+        bufferevent_setwatermark(thisarg->bev, EV_WRITE, BUFSIZ_FOR_BEV / 2, 0);
+        bufferevent_disable(bev, EV_READ);
+    }
+}
+
+void tcp_overbuf_cb(struct bufferevent *bev, void *arg) {         
+    TCPArg *thisarg = arg;
+    bufferevent_setcb(bev, tcp_forward_cb, NULL, tcp_sendreq_cb, arg);
+    bufferevent_setwatermark(bev, EV_WRITE, 0, 0);
+    bufferevent_enable(thisarg->bev, EV_READ);
+}
+
+void udp_events_cb(struct bufferevent *bev, short events, void *arg) {
+    (void) bev; (void) events; (void) arg;
+    char ctime[36] = {0};
+
+    if (events & BEV_EVENT_CONNECTED) {
+        printf("%s [udp] connected to %s:%d\n", loginf(ctime), servhost, servport);
+        printf("%s [udp] send request to %s:%d\n", loginf(ctime), servhost, servport);
+
+        bufferevent_write(bev, servreq, strlen(servreq));
+        bufferevent_write(bev, "ConnectionType: udp\r\n\r\n", strlen("ConnectionType: udp\r\n\r\n"));
+        bufferevent_setcb(bev, udp_estabed_cb, NULL, udp_events_cb, NULL);
+
+        if (get_ssl_sess() != NULL) SSL_SESSION_free(get_ssl_sess());
+        set_ssl_sess(SSL_get1_session(bufferevent_openssl_get_ssl(bev)));
+        return;
+    }
+
+    if (events & BEV_EVENT_ERROR) {
+        unsigned long sslerror = bufferevent_get_openssl_error(bev);
+        if (sslerror != 0) {
+            printf("%s [udp] openssl error: (%lu) %s\n", logerr(ctime), sslerror, ERR_reason_error_string(sslerror));
+        } else {
+            char error[64] = {0};
+            printf("%s [udp] socket error: (%d) %s\n", logerr(ctime), errno, strerror_r(errno, error, 64));
+        }
+    }
+
+    if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR)) {
+        printf("%s [udp] closed connect: %s:%d\n", loginf(ctime), servhost, servport);
+        SSL *ssl = bufferevent_openssl_get_ssl(bev);
+        SSL_set_shutdown(ssl, SSL_RECEIVED_SHUTDOWN);
+        SSL_shutdown(ssl);
+        bufferevent_free(bev);
+        udpnode_clear();
+        if (event_pending(udplev, EV_READ, NULL)) event_del(udplev);
+
+        ssl = SSL_new(get_ssl_ctx());
+        SSL_set_tlsext_host_name(ssl, servhost);
+        X509_VERIFY_PARAM_set1_host(SSL_get0_param(ssl), servhost, 0);
+        if (get_ssl_sess() != NULL) SSL_set_session(ssl, get_ssl_sess());
+
+        udpbev = bufferevent_openssl_socket_new(udpbase, -1, ssl, BUFFEREVENT_SSL_CONNECTING, BEV_OPT_CLOSE_ON_FREE);
+        bufferevent_setcb(udpbev, NULL, NULL, udp_events_cb, NULL);
+        bufferevent_enable(udpbev, EV_READ | EV_WRITE);
+        bufferevent_setwatermark(udpbev, EV_READ, 0, BUFSIZ_FOR_BEV);
+        printf("%s [udp] connecting to %s:%d\n", loginf(ctime), servhost, servport);
+        bufferevent_socket_connect(udpbev, (struct sockaddr *)&servaddr, sizeof(servaddr));
+        setsockopt_tcp(bufferevent_getfd(udpbev));
+    }
+}
+
+void udp_estabed_cb(struct bufferevent *bev, void *arg) {
+    (void) arg;
+    char ctime[36] = {0};
+
+    struct evbuffer *input = bufferevent_get_input(bev);
+    char *statusline = evbuffer_readln(input, NULL, EVBUFFER_EOL_CRLF);
+    evbuffer_drain(input, evbuffer_get_length(input));
+
+    if (statusline == NULL || strcmp(statusline, WEBSOCKET_STATUS_LINE) != 0) {
+        free(statusline);
+        printf("%s [udp] bad response: %s:%d\n", logerr(ctime), servhost, servport);
+        printf("%s [udp] closed connect: %s:%d\n", loginf(ctime), servhost, servport);
+
+        SSL *ssl = bufferevent_openssl_get_ssl(bev);
+        SSL_set_shutdown(ssl, SSL_RECEIVED_SHUTDOWN);
+        SSL_shutdown(ssl);                           
+
+        udpnode_clear();
+        bufferevent_free(bev);
+        if (event_pending(udplev, EV_READ, NULL)) event_del(udplev);
+        return;
+    }
+    free(statusline);
+
+    struct sockaddr_in selfaddr = {0};
+    socklen_t addrlen = sizeof(selfaddr);
+    getsockname(bufferevent_getfd(bev), (struct sockaddr *)&selfaddr, &addrlen);
+    printf("%s [udp] %s:%d <-> %s:%d\n", loginf(ctime), inet_ntoa(selfaddr.sin_addr), ntohs(selfaddr.sin_port), servhost, servport);
+
+    event_add(udplev, NULL);
+}
+
+void udp_request_cb(int sock, short events, void *arg) {
+    (void) sock; (void) events; (void) arg;
+    memset(udpcntl, 0, sizeof(udpcntl));
+    char ctime[36] = {0};
+    char error[64] = {0};
+
+    struct sockaddr_in clntaddr = {0};
+    socklen_t addrlen = sizeof(clntaddr);
+    struct iovec iov = {udprbuff, UDP_RAW_BUFSIZ};
+
+    struct msghdr msg = {0};
+    msg.msg_name = &clntaddr;
+    msg.msg_namelen = addrlen;
+    msg.msg_control = udpcntl;
+    msg.msg_controllen = 64;
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_flags = 0;
+
+    int rawlen = recvmsg(sock, &msg, 0);
+    if (rawlen == -1) {
+        printf("%s [udp] recvmsg socket: (%d) %s\n", logerr(ctime), errno, strerror_r(errno, error, 64));
+        return;
+    }
+    printf("%s [udp] recv %d bytes data from %s:%d\n", loginf(ctime), rawlen, inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
+
+    int found = 0;
+    struct sockaddr_in destaddr = {0};
+    for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
+        if (cmsg->cmsg_level == SOL_IP && cmsg->cmsg_type == IP_RECVORIGDSTADDR) {
+            memcpy(&destaddr, CMSG_DATA(cmsg), addrlen);
+            found = 1;
+            break;
+        }
+    }
+    if (!found) {
+        printf("%s [udp] can't get destaddr of %s:%d\n", logerr(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
+        return;
+    }
+    char iaddrstr[22] = {0};
+    strcpy(iaddrstr, inet_ntoa(clntaddr.sin_addr));
+    printf("%s [udp] %s:%d destaddr is %s:%d\n", loginf(ctime), iaddrstr, ntohs(clntaddr.sin_port), inet_ntoa(destaddr.sin_addr), ntohs(destaddr.sin_port));
+    sprintf(iaddrstr + strlen(iaddrstr), ":%d", ntohs(clntaddr.sin_port));
+
+    size_t enclen = 0;
+    base64_encode(udprbuff, rawlen, udpebuff, &enclen, 0);
+    udpebuff[enclen] = 0;
+
+    char eportstr[6] = {0};
+    sprintf(eportstr, "%d", udpnode_getport(iaddrstr));
+
+    char raddrstr[22] = {0};
+    sprintf(raddrstr, "%s:%d", inet_ntoa(destaddr.sin_addr), ntohs(destaddr.sin_port));
+
+    bufferevent_write(udpbev, iaddrstr, strlen(iaddrstr));
+    bufferevent_write(udpbev, ":", 1);
+    bufferevent_write(udpbev, raddrstr, strlen(raddrstr));
+    bufferevent_write(udpbev, ":", 1);
+    bufferevent_write(udpbev, eportstr, strlen(eportstr));
+    bufferevent_write(udpbev, ":", 1);
+    bufferevent_write(udpbev, udpebuff, strlen(udpebuff));
+    bufferevent_write(udpbev, "\r\n", 2);
+
+    printf("%s [udp] send %d bytes data to %s\n", loginf(ctime), rawlen, raddrstr);
+}
+
+void udp_response_cb(struct bufferevent *bev, void *arg) {
+    (void) bev; (void) arg;
+    char ctime[36] = {0};
+
+    char *response = NULL;
+    struct evbuffer *input = bufferevent_get_input(bev);
+    while ((response = evbuffer_readln(input, NULL, EVBUFFER_EOL_CRLF)) != NULL) {
+        int colon_cnt = 0;
+        for (int i = 0, l = strlen(response); i < l; ++i) {
+            if (response[i] == ':') ++colon_cnt;
+        }
+
+        if (colon_cnt != 5 || strlen(response) < 23) {
+            printf("%s [udp] bad response: %s:%d\n", logerr(ctime), servhost, servport);
+            free(response);
+            return;
+        }
+
+        char *iaddrptr = response;
+        char *iportptr = strchr(iaddrptr, ':'); *iportptr = 0; ++iportptr;
+        char *raddrptr = strchr(iportptr, ':'); *raddrptr = 0; ++raddrptr;
+        char *rportptr = strchr(raddrptr, ':'); *rportptr = 0; ++rportptr;
+        char *eportptr = strchr(rportptr, ':'); *eportptr = 0; ++eportptr;
+        char *edataptr = strchr(eportptr, ':'); *edataptr = 0; ++edataptr;
+
+        if (strlen(iaddrptr) < 7 || strlen(iaddrptr) > 15) {
+            printf("%s [udp] bad response: %s:%d\n", logerr(ctime), servhost, servport);
+            free(response);
+            return;
+        }
+
+        if (strlen(iportptr) < 1 || strlen(iportptr) > 5) {
+            printf("%s [udp] bad response: %s:%d\n", logerr(ctime), servhost, servport);
+            free(response);
+            return;
+        }
+
+        if (strlen(raddrptr) < 7 || strlen(raddrptr) > 15) {
+            printf("%s [udp] bad response: %s:%d\n", logerr(ctime), servhost, servport);
+            free(response);
+            return;
+        }
+
+        if (strlen(rportptr) < 1 || strlen(rportptr) > 5) {
+            printf("%s [udp] bad response: %s:%d\n", logerr(ctime), servhost, servport);
+            free(response);
+            return;
+        }
+
+        if (strlen(eportptr) < 1 || strlen(eportptr) > 5) {
+            printf("%s [udp] bad response: %s:%d\n", logerr(ctime), servhost, servport);
+            free(response);
+            return;
+        }
+
+        if (strlen(edataptr) < 1) {
+            printf("%s [udp] bad response: %s:%d\n", logerr(ctime), servhost, servport);
+            free(response);
+            return;
+        }
+
+        uint32_t iaddr = inet_addr(iaddrptr);
+        if (iaddr == INADDR_NONE) {
+            printf("%s [udp] bad response: %s:%d\n", logerr(ctime), servhost, servport);
+            free(response);
+            return;
+        }
+
+        uint16_t iport = htons(strtol(iportptr, NULL, 10));
+        if (iport == 0) {
+            printf("%s [udp] bad response: %s:%d\n", logerr(ctime), servhost, servport);
+            free(response);
+            return;
+        }
+
+        uint32_t raddr = inet_addr(raddrptr);
+        if (raddr == INADDR_NONE) {
+            printf("%s [udp] bad response: %s:%d\n", logerr(ctime), servhost, servport);
+            free(response);
+            return;
+        }
+
+        uint16_t rport = htons(strtol(rportptr, NULL, 10));
+        if (rport == 0) {
+            printf("%s [udp] bad response: %s:%d\n", logerr(ctime), servhost, servport);
+            free(response);
+            return;
+        }
+
+        int eport = strtol(eportptr, NULL, 10);
+        if (eport < 0 || eport > 65535) {
+            printf("%s [udp] bad response: %s:%d\n", logerr(ctime), servhost, servport);
+            free(response);
+            return;
+        }
+
+        size_t rawlen = 0;
+        if (base64_decode(edataptr, strlen(edataptr), udprbuff, &rawlen, 0) != 1) {
+            printf("%s [udp] bad response: %s:%d\n", logerr(ctime), servhost, servport);
+            free(response);
+            return;
+        }
+        printf("%s [udp] recv %ld bytes data from %s:%s\n", loginf(ctime), rawlen, raddrptr, rportptr);
+
+        *--iportptr = ':';
+        udpnode_put(iaddrptr, eport);
+
+        struct sockaddr_in clntaddr = {0};
+        clntaddr.sin_family = AF_INET;
+        clntaddr.sin_addr.s_addr = iaddr;
+        clntaddr.sin_port = iport;
+
+        struct sockaddr_in destaddr = {0};
+        destaddr.sin_family = AF_INET;
+        destaddr.sin_addr.s_addr = raddr;
+        destaddr.sin_port = rport;
+
+        int destsock = socket(AF_INET, SOCK_DGRAM, 0);
+        evutil_make_socket_nonblocking(destsock);
+
+        int optval = 1;
+        setsockopt(destsock, SOL_IP, IP_TRANSPARENT, &optval, sizeof(optval));
+
+        if (bind(destsock, (struct sockaddr *)&destaddr, sizeof(destaddr)) == -1) {
+            char error[64] = {0};
+            printf("%s [udp] bind socket: (%d) %s\n", logerr(ctime), errno, strerror_r(errno, error, 64));
+            close(destsock);
+            free(response);
+            return;
+        }
+
+        if (sendto(destsock, udprbuff, rawlen, 0, (struct sockaddr *)&clntaddr, sizeof(clntaddr)) == -1) {
+            char error[64] = {0};
+            printf("%s [udp] sendto socket: (%d) %s\n", logerr(ctime), errno, strerror_r(errno, error, 64));
+            close(destsock);
+            free(response);
+            return;
+        }
+
+        printf("%s [udp] send %ld bytes data to %s\n", loginf(ctime), rawlen, iaddrptr);
+        close(destsock);
+        free(response);
+    }
+}
+
+void udp_timeout_cb(int sock, short events, void *arg) {
+    (void) sock; (void) events;
+    char ctime[36] = {0};
+    printf("%s [udp] socket timeout: %s\n", loginf(ctime), (char *)arg);
+    udpnode_del(arg);
+}

@@ -748,6 +748,19 @@ void udp_estabed_cb(struct bufferevent *bev, void *arg) {
         udpnode_clear();
         bufferevent_free(bev);
         if (event_pending(udplev, EV_READ, NULL)) event_del(udplev);
+
+        ssl = SSL_new(get_ssl_ctx());
+        SSL_set_tlsext_host_name(ssl, servhost);
+        X509_VERIFY_PARAM_set1_host(SSL_get0_param(ssl), servhost, 0);
+        if (get_ssl_sess() != NULL) SSL_set_session(ssl, get_ssl_sess());
+
+        udpbev = bufferevent_openssl_socket_new(udpbase, -1, ssl, BUFFEREVENT_SSL_CONNECTING, BEV_OPT_CLOSE_ON_FREE);
+        bufferevent_setcb(udpbev, NULL, NULL, udp_events_cb, NULL);
+        bufferevent_enable(udpbev, EV_READ | EV_WRITE);
+        bufferevent_setwatermark(udpbev, EV_READ, 0, BUFSIZ_FOR_BEV);
+        printf("%s [udp] connecting to %s:%d\n", loginf(ctime), servhost, servport);
+        bufferevent_socket_connect(udpbev, (struct sockaddr *)&servaddr, sizeof(servaddr));
+        setsockopt_tcp(bufferevent_getfd(udpbev));
         return;
     }
     free(statusline);

@@ -815,7 +815,6 @@ void udp_request_cb(int sock, short events, void *arg) {
     }
     char iaddrstr[22] = {0};
     strcpy(iaddrstr, inet_ntoa(clntaddr.sin_addr));
-    printf("%s [udp] %s:%d destaddr is %s:%d\n", loginf(ctime), iaddrstr, ntohs(clntaddr.sin_port), inet_ntoa(destaddr.sin_addr), ntohs(destaddr.sin_port));
     sprintf(iaddrstr + strlen(iaddrstr), ":%d", ntohs(clntaddr.sin_port));
 
     size_t enclen = 0;

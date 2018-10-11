@@ -573,7 +573,8 @@ void tcp_sendreq_cb(struct bufferevent *bev, short events, void *arg) {
         if (sslerror != 0) {
             printf("%s [tcp] openssl error: (%lu) %s\n", logerr(ctime), sslerror, ERR_reason_error_string(sslerror));
         } else {
-            printf("%s [tcp] socket error: (%d) %s\n", logerr(ctime), EVUTIL_SOCKET_ERROR(), evutil_socket_error_to_string(EVUTIL_SOCKET_ERROR()));
+            char error[64] = {0};
+            printf("%s [tcp] socket error: (%d) %s\n", logerr(ctime), errno, strerror_r(errno, error, 64));
         }
     }
 
@@ -698,7 +699,8 @@ void udp_events_cb(struct bufferevent *bev, short events, void *arg) {
         if (sslerror != 0) {
             printf("%s [udp] openssl error: (%lu) %s\n", logerr(ctime), sslerror, ERR_reason_error_string(sslerror));
         } else {
-            printf("%s [udp] socket error: (%d) %s\n", logerr(ctime), EVUTIL_SOCKET_ERROR(), evutil_socket_error_to_string(EVUTIL_SOCKET_ERROR()));
+            char error[64] = {0};
+            printf("%s [udp] socket error: (%d) %s\n", logerr(ctime), errno, strerror_r(errno, error, 64));
         }
     }
 

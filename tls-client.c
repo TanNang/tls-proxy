@@ -771,6 +771,7 @@ void udp_estabed_cb(struct bufferevent *bev, void *arg) {
     printf("%s [udp] %s:%d <-> %s:%d\n", loginf(ctime), inet_ntoa(selfaddr.sin_addr), ntohs(selfaddr.sin_port), servhost, servport);
 
     event_add(udplev, NULL);
+    bufferevent_setcb(bev, udp_response_cb, NULL, udp_events_cb, NULL);
 }
 
 void udp_request_cb(int sock, short events, void *arg) {

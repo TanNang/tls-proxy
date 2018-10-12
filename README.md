@@ -23,7 +23,7 @@
  - [openssl](https://github.com/openssl/openssl)
  - [libevent](https://github.com/libevent/libevent)
 
-## 如何编译
+## 编译方法
 > 这里以 linux x86_64 为例，其他平台请酌情修改（貌似需要安装 `openssl-dev`、`openssl-devel`？）。
 
 ```bash

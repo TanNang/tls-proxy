@@ -42,6 +42,7 @@ void new_events_cb(struct bufferevent *bev, short events, void *arg);
 
 void tcp_read_cb(struct bufferevent *bev, void *arg);
 void tcp_write_cb(struct bufferevent *bev, void *arg);
+void tcp_close_cb(struct bufferevent *bev, void *arg);
 void tcp_events_cb(struct bufferevent *bev, short events, void *arg);
 
 void udp_events_cb(struct bufferevent *bev, short events, void *arg);
@@ -472,11 +473,15 @@ void tcp_events_cb(struct bufferevent *bev, short events, void *arg) {
         getpeername(bufferevent_getfd(arg), (struct sockaddr *)&othraddr, &addrlen);
         printf("%s [tcp] closed connect: %s:%d\n", loginf(ctime), inet_ntoa(thisaddr.sin_addr), ntohs(thisaddr.sin_port));
         printf("%s [tcp] closed connect: %s:%d\n", loginf(ctime), inet_ntoa(othraddr.sin_addr), ntohs(othraddr.sin_port));
-        bufferevent_flush(bev, EV_WRITE, BEV_FINISHED);
-        bufferevent_flush(arg, EV_WRITE, BEV_FINISHED);
         bufferevent_free(bev);
-        bufferevent_free(arg);
+        bufferevent_setwatermark(arg, EV_WRITE, 0, 0);
+        bufferevent_setcb(arg, NULL, tcp_close_cb, NULL, NULL);
     }
+}
+
+void tcp_close_cb(struct bufferevent *bev, void *arg) {
+    (void) arg;
+    bufferevent_free(bev);
 }
 
 void udp_events_cb(struct bufferevent *bev, short events, void *arg) {
@@ -492,7 +497,6 @@ void udp_events_cb(struct bufferevent *bev, short events, void *arg) {
 
     if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR)) {
         printf("%s [udp] closed connect: %s:%d\n", loginf(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
-        bufferevent_flush(bev, EV_WRITE, BEV_FINISHED);
         bufferevent_free(bev);
         udpnode_clear(arg);
     }

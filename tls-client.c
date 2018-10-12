@@ -54,6 +54,7 @@ void tcp_sendreq_cb(struct bufferevent *bev, short events, void *arg);
 void tcp_recvres_cb(struct bufferevent *bev, void *arg);
 void tcp_forward_cb(struct bufferevent *bev, void *arg);
 void tcp_overbuf_cb(struct bufferevent *bev, void *arg);
+void tcp_prefree_cb(struct bufferevent *bev, void *arg);
 
 void udp_events_cb(struct bufferevent *bev, short events, void *arg);
 void udp_estabed_cb(struct bufferevent *bev, void *arg);
@@ -637,11 +638,9 @@ void tcp_sendreq_cb(struct bufferevent *bev, short events, void *arg) {
         TCPArg *othrarg = NULL;
         bufferevent_getcb(thisarg->bev, NULL, NULL, NULL, (void **)&othrarg);
 
-        bufferevent_flush(bev, EV_WRITE, BEV_FINISHED);
-        bufferevent_flush(thisarg->bev, EV_WRITE, BEV_FINISHED);
-
         bufferevent_free(bev);
-        bufferevent_free(thisarg->bev);
+        bufferevent_setwatermark(thisarg->bev, EV_WRITE, 0, 0);
+        bufferevent_setcb(thisarg->bev, NULL, tcp_prefree_cb, NULL, NULL);
 
         free(thisarg);
         free(othrarg);
@@ -675,9 +674,6 @@ void tcp_recvres_cb(struct bufferevent *bev, void *arg) {
 
         TCPArg *othrarg = NULL;
         bufferevent_getcb(thisarg->bev, NULL, NULL, NULL, (void **)&othrarg);
-
-        bufferevent_flush(bev, EV_WRITE, BEV_FINISHED);
-        bufferevent_flush(thisarg->bev, EV_WRITE, BEV_FINISHED);
 
         bufferevent_free(bev);
         bufferevent_free(thisarg->bev);
@@ -718,6 +714,11 @@ void tcp_overbuf_cb(struct bufferevent *bev, void *arg) {
     bufferevent_setcb(bev, tcp_forward_cb, NULL, tcp_sendreq_cb, arg);
 }
 
+void tcp_prefree_cb(struct bufferevent *bev, void *arg) {
+    (void) arg;
+    bufferevent_free(bev);
+}
+
 void udp_events_cb(struct bufferevent *bev, short events, void *arg) {
     (void) bev; (void) events; (void) arg;
     char ctime[36] = {0};
@@ -752,7 +753,6 @@ void udp_events_cb(struct bufferevent *bev, short events, void *arg) {
         SSL *ssl = bufferevent_openssl_get_ssl(bev);
         SSL_set_shutdown(ssl, SSL_RECEIVED_SHUTDOWN);
         SSL_shutdown(ssl);
-        bufferevent_flush(bev, EV_WRITE, BEV_FINISHED);
         bufferevent_free(bev);
         udpnode_clear();
         if (event_pending(udplev, EV_READ, NULL)) event_del(udplev);

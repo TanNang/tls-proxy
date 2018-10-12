@@ -29,9 +29,7 @@
            " -h                     show help and exit\n")
 
 #define WEBSOCKET_RESPONSE "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
-
 #define BUFSIZ_FOR_BEV 524288
-
 #define UDP_RAW_BUFSIZ 1472
 #define UDP_ENC_BUFSIZ 1960
 
@@ -51,14 +49,14 @@ void udp_request_cb(struct bufferevent *bev, void *arg);
 void udp_response_cb(int sock, short events, void *arg);
 
 typedef struct {
-    int            port; // key
-    struct event  *ev;   // value
-    UT_hash_handle hh;   // hashtable
+    int            port;
+    struct event  *ev;
+    UT_hash_handle hh;
 } UDPNode;
 
 typedef struct {
-    char                addr[16]; // intranet addr
-    char                port[6];  // intranet port
+    char                addr[16];
+    char                port[6];
     UDPNode            *hash;
     struct bufferevent *bev;
 } UDPArg;
@@ -79,6 +77,7 @@ void udpnode_put(UDPNode *hash, int port, struct event *ev) {
         node->ev = ev;
         HASH_ADD_INT(hash, port, node);
     } else {
+        if (node->port == 0 && node->ev == NULL) return;
         free(event_get_callback_arg(node->ev));
         close(event_get_fd(node->ev));
         event_free(node->ev);
@@ -100,7 +99,7 @@ struct event *udpnode_getev(UDPNode *hash, int port) {
 void udpnode_del(UDPNode *hash, int port) {
     UDPNode *node = udpnode_get(hash, port);
     if (node == NULL) return;
-    if (node->port == 0) return;
+    if (node->port == 0 && node->ev == NULL) return;
     HASH_DEL(hash, node);
     free(event_get_callback_arg(node->ev));
     close(event_get_fd(node->ev));
@@ -413,8 +412,6 @@ void new_fstreq_cb(struct bufferevent *bev, void *arg) {
                 setsockopt_tcp(bufferevent_getfd(destbev));
 
                 bufferevent_setcb(bev, NULL, NULL, tcp_events_cb, destbev);
-                bufferevent_disable(bev, EV_READ);
-
                 free(reqline);
                 return;
             }
@@ -437,20 +434,18 @@ void new_fstreq_cb(struct bufferevent *bev, void *arg) {
 void tcp_read_cb(struct bufferevent *bev, void *arg) {
     struct evbuffer *input = bufferevent_get_input(bev);
     struct evbuffer *output = bufferevent_get_output(arg);
-
     evbuffer_add_buffer(output, input);
-
     if (evbuffer_get_length(output) >= BUFSIZ_FOR_BEV) {
-        bufferevent_setcb(arg, tcp_read_cb, tcp_write_cb, tcp_events_cb, bev);
-        bufferevent_setwatermark(arg, EV_WRITE, BUFSIZ_FOR_BEV / 2, 0);
         bufferevent_disable(bev, EV_READ);
+        bufferevent_setwatermark(arg, EV_WRITE, BUFSIZ_FOR_BEV / 2, 0);
+        bufferevent_setcb(arg, tcp_read_cb, tcp_write_cb, tcp_events_cb, bev);
     }
 }
 
 void tcp_write_cb(struct bufferevent *bev, void *arg) {
-    bufferevent_setcb(bev, tcp_read_cb, NULL, tcp_events_cb, arg);
+    bufferevent_enable(arg, EV_READ | EV_WRITE);
     bufferevent_setwatermark(bev, EV_WRITE, 0, 0);
-    bufferevent_enable(arg, EV_READ);
+    bufferevent_setcb(bev, tcp_read_cb, NULL, tcp_events_cb, arg);
 }
 
 void tcp_events_cb(struct bufferevent *bev, short events, void *arg) {
@@ -464,7 +459,6 @@ void tcp_events_cb(struct bufferevent *bev, short events, void *arg) {
         bufferevent_write(arg, WEBSOCKET_RESPONSE, strlen(WEBSOCKET_RESPONSE));
         bufferevent_setcb(bev, tcp_read_cb, NULL, tcp_events_cb, arg);
         bufferevent_setcb(arg, tcp_read_cb, NULL, tcp_events_cb, bev);
-        bufferevent_enable(arg, EV_READ);
         return;
     }
 
@@ -665,7 +659,7 @@ void udp_request_cb(struct bufferevent *bev, void *arg) {
             udparg->bev = bev;
 
             struct event *ev = event_new(bufferevent_get_base(bev), esock, EV_READ | EV_TIMEOUT | EV_PERSIST, udp_response_cb, udparg);
-            struct timeval tv = {60 * 5, 0}; // 300s timeout
+            struct timeval tv = {60 * 5, 0}; // 300s
             event_add(ev, &tv);
 
             udpnode_put(arg, eport, ev);

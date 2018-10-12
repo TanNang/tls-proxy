@@ -32,6 +32,8 @@
 #define BUFSIZ_FOR_BEV 524288
 #define UDP_RAW_BUFSIZ 1472
 #define UDP_ENC_BUFSIZ 1960
+#define UDP_HASH_LEN 1000
+#define UDP_HASH_PRE 100
 
 static struct sockaddr_in servaddr;
 void *service(void *arg);
@@ -70,6 +72,7 @@ UDPNode *udpnode_init() {
 }
 
 void udpnode_put(UDPNode *hash, int port, struct event *ev) {
+    if (port == 0) return;
     UDPNode *node = NULL;
     HASH_FIND_INT(hash, &port, node);
     if (node == NULL) {
@@ -77,18 +80,37 @@ void udpnode_put(UDPNode *hash, int port, struct event *ev) {
         node->port = port;
         node->ev = ev;
         HASH_ADD_INT(hash, port, node);
+        if (HASH_COUNT(hash) > UDP_HASH_LEN) {
+            int cnt = 0;
+            UDPNode *head = hash->hh.next;
+            UDPNode *node = NULL, *temp = NULL;
+            HASH_ITER(hh, head, node, temp) {
+                HASH_DEL(hash, node);
+                free(event_get_callback_arg(node->ev));
+                close(event_get_fd(node->ev));
+                event_free(node->ev);
+                free(node);
+                if (++cnt == UDP_HASH_PRE) return;
+            }
+        }
     } else {
-        if (node->port == 0 && node->ev == NULL) return;
+        if (node->port == 0) return;
         free(event_get_callback_arg(node->ev));
         close(event_get_fd(node->ev));
         event_free(node->ev);
         node->ev = ev;
+        HASH_DEL(hash, node);
+        HASH_ADD_INT(hash, port, node);
     }
 }
 
 UDPNode *udpnode_get(UDPNode *hash, int port) {
+    if (port == 0) return NULL;
     UDPNode *node = NULL;
     HASH_FIND_INT(hash, &port, node);
+    if (node == NULL) return NULL;
+    HASH_DEL(hash, node);
+    HASH_ADD_INT(hash, port, node);
     return node;
 }
 
@@ -98,15 +120,16 @@ struct event *udpnode_getev(UDPNode *hash, int port) {
 }
 
 void udpnode_del(UDPNode *hash, int port) {
-    UDPNode *node = udpnode_get(hash, port);
+    UDPNode *node = NULL;
+    HASH_FIND_INT(hash, &port, node);
     if (node == NULL) return;
-    if (node->port == 0 && node->ev == NULL) return;
+    if (node->port == 0) return;
     HASH_DEL(hash, node);
     free(event_get_callback_arg(node->ev));
     close(event_get_fd(node->ev));
     event_free(node->ev);
     free(node);
-} 
+}
 
 void udpnode_clear(UDPNode *hash) {
     UDPNode *node = NULL, *temp = NULL;
@@ -208,7 +231,7 @@ int main(int argc, char *argv[]) {
                 break;
             case 'j':
                 thread_nums = strtol(optarg, NULL, 10);
-                if (thread_nums <= 0) {
+                if (thread_nums < 1) {
                     printf("invalid thread nums: %d\n", thread_nums);
                     PRINT_COMMAND_HELP;
                     return 1;
@@ -444,7 +467,7 @@ void tcp_read_cb(struct bufferevent *bev, void *arg) {
 }
 
 void tcp_write_cb(struct bufferevent *bev, void *arg) {
-    bufferevent_enable(arg, EV_READ | EV_WRITE);
+    bufferevent_enable(arg, EV_READ);
     bufferevent_setwatermark(bev, EV_WRITE, 0, 0);
     bufferevent_setcb(bev, tcp_read_cb, NULL, tcp_events_cb, arg);
 }

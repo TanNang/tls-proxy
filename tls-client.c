@@ -41,6 +41,8 @@
            " -v                      show version and exit\n"\
            " -h                      show help and exit\n")
 
+#define UDP_HASH_LEN 1000
+#define UDP_HASH_PRE 100
 #define UDP_RAW_BUFSIZ 1472
 #define UDP_ENC_BUFSIZ 1960
 #define BUFSIZ_FOR_BEV 524288
@@ -96,10 +98,22 @@ void udpnode_put(char *addr, int port) {
         struct timeval tv = {5 * 60, 0}; // 300s
         event_add(node->ev, &tv);
         HASH_ADD_STR(udphash, addr, node);
+        if (HASH_COUNT(udphash) > UDP_HASH_LEN) {
+            int cnt = 0;
+            UDPNode *node = NULL, *temp = NULL;
+            HASH_ITER(hh, udphash, node, temp) {
+                HASH_DEL(udphash, node);
+                event_free(node->ev);
+                free(node);
+                if (++cnt == UDP_HASH_PRE) return;
+            }
+        }
     } else {
         node->port = port;
         struct timeval tv = {5 * 60, 0}; // 300s
         event_add(node->ev, &tv);
+        HASH_DEL(udphash, node);
+        HASH_ADD_STR(udphash, addr, node);
     }
 }
 
@@ -109,6 +123,8 @@ UDPNode *udpnode_get(char *addr) {
     if (node == NULL) return node;
     struct timeval tv = {5 * 60, 0}; // 300s
     event_add(node->ev, &tv);
+    HASH_DEL(udphash, node);
+    HASH_ADD_STR(udphash, addr, node);
     return node;
 }
 
@@ -571,6 +587,7 @@ void tcp_newconn_cb(struct evconnlistener *listener, int sock, struct sockaddr *
     bufferevent_setcb(clntbev, NULL, NULL, tcp_sendreq_cb, clntarg);
     bufferevent_setcb(destbev, NULL, NULL, tcp_sendreq_cb, destarg);
 
+    bufferevent_enable(clntbev, EV_WRITE);
     bufferevent_enable(destbev, EV_READ | EV_WRITE);
     
     bufferevent_setwatermark(clntbev, EV_READ, 0, BUFSIZ_FOR_BEV);
@@ -633,6 +650,9 @@ void tcp_sendreq_cb(struct bufferevent *bev, short events, void *arg) {
         } else {
             printf("%s [tcp] closed connect: %s:%d\n", loginf(ctime), inet_ntoa(thisaddr.sin_addr), ntohs(thisaddr.sin_port));
             printf("%s [tcp] closed connect: %s:%d\n", loginf(ctime), servhost, servport);
+            SSL *ssl = bufferevent_openssl_get_ssl(thisarg->bev);
+            SSL_set_shutdown(ssl, SSL_RECEIVED_SHUTDOWN);
+            SSL_shutdown(ssl);
         }
 
         TCPArg *othrarg = NULL;
@@ -664,7 +684,7 @@ void tcp_recvres_cb(struct bufferevent *bev, void *arg) {
     if (statusline == NULL || strcmp(statusline, WEBSOCKET_STATUS_LINE) != 0) {
         free(statusline);
 
-        printf("%s [tcp] bad response: %s:%d\n", logerr(ctime), servhost, servport);
+        printf("%s [tcp] bad response: %s:%d\n",   logerr(ctime), servhost, servport);
         printf("%s [tcp] closed connect: %s:%d\n", loginf(ctime), servhost, servport);
         printf("%s [tcp] closed connect: %s:%d\n", loginf(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
 
@@ -688,9 +708,9 @@ void tcp_recvres_cb(struct bufferevent *bev, void *arg) {
     bufferevent_setcb(bev, tcp_forward_cb, NULL, tcp_sendreq_cb, arg);
 
     TCPArg *othrarg = NULL;
-    bufferevent_enable(thisarg->bev, EV_READ | EV_WRITE);
     bufferevent_getcb(thisarg->bev, NULL, NULL, NULL, (void **)&othrarg);
     bufferevent_setcb(thisarg->bev, tcp_forward_cb, NULL, tcp_sendreq_cb, othrarg);
+    bufferevent_enable(thisarg->bev, EV_READ);
 }
 
 void tcp_forward_cb(struct bufferevent *bev, void *arg) {
@@ -707,9 +727,9 @@ void tcp_forward_cb(struct bufferevent *bev, void *arg) {
     }
 }
 
-void tcp_overbuf_cb(struct bufferevent *bev, void *arg) {         
+void tcp_overbuf_cb(struct bufferevent *bev, void *arg) {
     TCPArg *thisarg = arg;
-    bufferevent_enable(thisarg->bev, EV_READ | EV_WRITE);
+    bufferevent_enable(thisarg->bev, EV_READ);
     bufferevent_setwatermark(bev, EV_WRITE, 0, 0);
     bufferevent_setcb(bev, tcp_forward_cb, NULL, tcp_sendreq_cb, arg);
 }
@@ -858,8 +878,7 @@ void udp_request_cb(int sock, short events, void *arg) {
         return;
     }
     char iaddrstr[22] = {0};
-    strcpy(iaddrstr, inet_ntoa(clntaddr.sin_addr));
-    sprintf(iaddrstr + strlen(iaddrstr), ":%d", ntohs(clntaddr.sin_port));
+    sprintf(iaddrstr, "%s:%d", inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
 
     size_t enclen = 0;
     base64_encode(udprbuff, rawlen, udpebuff, &enclen, 0);

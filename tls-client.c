@@ -637,6 +637,9 @@ void tcp_sendreq_cb(struct bufferevent *bev, short events, void *arg) {
         TCPArg *othrarg = NULL;
         bufferevent_getcb(thisarg->bev, NULL, NULL, NULL, (void **)&othrarg);
 
+        bufferevent_flush(bev, EV_WRITE, BEV_FINISHED);
+        bufferevent_flush(thisarg->bev, EV_WRITE, BEV_FINISHED);
+
         bufferevent_free(bev);
         bufferevent_free(thisarg->bev);
 
@@ -672,6 +675,9 @@ void tcp_recvres_cb(struct bufferevent *bev, void *arg) {
 
         TCPArg *othrarg = NULL;
         bufferevent_getcb(thisarg->bev, NULL, NULL, NULL, (void **)&othrarg);
+
+        bufferevent_flush(bev, EV_WRITE, BEV_FINISHED);
+        bufferevent_flush(thisarg->bev, EV_WRITE, BEV_FINISHED);
 
         bufferevent_free(bev);
         bufferevent_free(thisarg->bev);
@@ -746,6 +752,7 @@ void udp_events_cb(struct bufferevent *bev, short events, void *arg) {
         SSL *ssl = bufferevent_openssl_get_ssl(bev);
         SSL_set_shutdown(ssl, SSL_RECEIVED_SHUTDOWN);
         SSL_shutdown(ssl);
+        bufferevent_flush(bev, EV_WRITE, BEV_FINISHED);
         bufferevent_free(bev);
         udpnode_clear();
         if (event_pending(udplev, EV_READ, NULL)) event_del(udplev);

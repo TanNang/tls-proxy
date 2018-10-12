@@ -60,8 +60,3 @@ rm -fr /tmp/openssl*
 rm -fr /tmp/libevent*
 rm -fr /tmp/tls-proxy
 ```
-
-### 已知问题
-- 目前的 UDP 实现仅适用于 `request-response` 类型的协议，如 DNS，QUIC 暂时不支持。
-- 程序使用了 `inet_ntoa()` 非线程安全函数，虽然这只会影响程序输出，但是还是有点不爽。
-- 代码很简陋，毕竟我也是刚接触 C 语言不久；另外最近没啥时间，上述问题暂时没有时间修。

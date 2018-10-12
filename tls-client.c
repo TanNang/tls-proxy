@@ -36,6 +36,8 @@
            " -t <tcp_proxy_port>     tcp port (iptables xt_tproxy). default: 60080\n"\
            " -u <udp_proxy_port>     udp port (iptables xt_tproxy). default: 60080\n"\
            " -j <thread_numbers>     number of worker thread (for tcp). default: 1\n"\
+           " -T                      disable tcp transparent proxy\n"\
+           " -U                      disable udp transparent proxy\n"\
            " -v                      show version and exit\n"\
            " -h                      show help and exit\n")
 
@@ -90,12 +92,12 @@ void udpnode_put(char *addr, int port) {
         strcpy(node->addr, addr);
         node->port = port;
         node->ev = event_new(udpbase, -1, EV_TIMEOUT, udp_timeout_cb, node->addr);
-        struct timeval tv = {5 * 60, 0}; // 300s timeout
+        struct timeval tv = {5 * 60, 0}; // 300s
         event_add(node->ev, &tv);
         HASH_ADD_STR(udphash, addr, node);
     } else {
         node->port = port;
-        struct timeval tv = {5 * 60, 0}; // 300s timeout
+        struct timeval tv = {5 * 60, 0}; // 300s
         event_add(node->ev, &tv);
     }
 }
@@ -104,7 +106,7 @@ UDPNode *udpnode_get(char *addr) {
     UDPNode *node = NULL;
     HASH_FIND_STR(udphash, addr, node);
     if (node == NULL) return node;
-    struct timeval tv = {5 * 60, 0}; // 300s timeout
+    struct timeval tv = {5 * 60, 0}; // 300s
     event_add(node->ev, &tv);
     return node;
 }
@@ -115,7 +117,8 @@ int udpnode_getport(char *addr) {
 }
 
 void udpnode_del(char *addr) {
-    UDPNode *node = udpnode_get(addr);
+    UDPNode *node = NULL;
+    HASH_FIND_STR(udphash, addr, node);
     if (node == NULL) return;
     HASH_DEL(udphash, node);
     event_free(node->ev);
@@ -258,7 +261,7 @@ int main(int argc, char *argv[]) {
     int   udport = 60080;
 
     opterr = 0;
-    char *optstr = "s:p:c:P:H:b:t:u:j:vh";
+    char *optstr = "s:p:c:P:H:b:t:u:j:TUvh";
     int opt = -1;
     while ((opt = getopt(argc, argv, optstr)) != -1) {
         switch (opt) {
@@ -268,6 +271,12 @@ int main(int argc, char *argv[]) {
             case 'h':
                 PRINT_COMMAND_HELP;
                 return 0;
+            case 'T':
+                tcport = 0;
+                break;
+            case 'U':
+                udport = 0;
+                break;
             case 's':
                 servhost = optarg;
                 break;
@@ -333,6 +342,10 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    if (tcport == 0 && udport == 0) {
+        printf("nothing to do (-TU)\n");
+        return 0;
+    }
     if (servhost == NULL) {
         printf("missing option '-s'\n");
         PRINT_COMMAND_HELP;
@@ -373,42 +386,55 @@ int main(int argc, char *argv[]) {
     memcpy(&servaddr.sin_addr, ent->h_addr_list[0], ent->h_length);
     servaddr.sin_port = htons(servport);
 
-    tcpladdr.sin_family = AF_INET;
-    tcpladdr.sin_addr.s_addr = inet_addr(listen);
-    tcpladdr.sin_port = htons(tcport);
+    if (tcport != 0) {
+        tcpladdr.sin_family = AF_INET;
+        tcpladdr.sin_addr.s_addr = inet_addr(listen);
+        tcpladdr.sin_port = htons(tcport);
+    }
 
-    udpladdr.sin_family = AF_INET;
-    udpladdr.sin_addr.s_addr = inet_addr(listen);
-    udpladdr.sin_port = htons(udport);
+    if (udport != 0) {
+        udpladdr.sin_family = AF_INET;
+        udpladdr.sin_addr.s_addr = inet_addr(listen);
+        udpladdr.sin_port = htons(udport);
 
-    udprbuff = calloc(1, UDP_RAW_BUFSIZ);
-    udpebuff = calloc(1, UDP_ENC_BUFSIZ);
+        udprbuff = calloc(1, UDP_RAW_BUFSIZ);
+        udpebuff = calloc(1, UDP_ENC_BUFSIZ);
+    }
 
     char ctime[36] = {0};
     printf("%s [srv] thread nums: %d\n",    loginf(ctime), thread_nums);
     printf("%s [srv] server host: %s\n",    loginf(ctime), servhost);
     printf("%s [srv] server addr: %s:%d\n", loginf(ctime), inet_ntoa(servaddr.sin_addr), servport);
-    printf("%s [srv] tcp address: %s:%d\n", loginf(ctime), listen, tcport);
-    printf("%s [srv] udp address: %s:%d\n", loginf(ctime), listen, udport);
+    if (tcport != 0) printf("%s [srv] tcp address: %s:%d\n", loginf(ctime), listen, tcport);
+    if (udport != 0) printf("%s [srv] udp address: %s:%d\n", loginf(ctime), listen, udport);
 
     thread_datas = calloc(thread_nums, sizeof(THREAD_DATA));
     thread_datas[0].tid = pthread_self();
-    for (int i = 1; i < thread_nums; ++i) {
-        if (pthread_create(&thread_datas[i].tid, NULL, service, NULL) != 0) {
-            printf("%s [srv] create thread: (%d) %s\n", logerr(ctime), errno, strerror(errno));
-            return errno;
+    if (tcport != 0) {
+        for (int i = 1; i < thread_nums; ++i) {
+            if (pthread_create(&thread_datas[i].tid, NULL, service, NULL) != 0) {
+                printf("%s [srv] create thread: (%d) %s\n", logerr(ctime), errno, strerror(errno));
+                return errno;
+            }
+        }
+        if (udport == 0) service(NULL);      // tcponly
+        if (udport != 0) service((void *)1); // tcp&udp
+    } else {
+        service((void *)2); // udponly
+    }
+
+    if (tcport != 0) {
+        for (int i = 1; i < thread_nums; ++i) {
+            pthread_join(thread_datas[i].tid, NULL);
         }
     }
-    service((void *)1); // mark: process udp proxy
 
-    for (int i = 1; i < thread_nums; ++i) {
-        pthread_join(thread_datas[i].tid, NULL);
+    if (udport != 0) {
+        free(udprbuff);
+        free(udpebuff);
     }
 
-    free(udprbuff);
-    free(udpebuff);
     free(thread_datas);
-
     ERR_free_strings();
     EVP_cleanup();
 
@@ -431,24 +457,30 @@ void *service(void *arg) {
     event_config_set_flag(cfg, EVENT_BASE_FLAG_NOLOCK | EVENT_BASE_FLAG_IGNORE_ENV);
     struct event_base *base = event_base_new_with_config(cfg);
     event_config_free(cfg);
-    if (arg == (void *)1) udpbase = base;
+    if (arg != NULL) udpbase = base;
 
-    struct evconnlistener *tcplistener = evconnlistener_new_bind(
-            base, tcp_newconn_cb, NULL,
-            LEV_OPT_CLOSE_ON_FREE | LEV_OPT_REUSEABLE | LEV_OPT_REUSEABLE_PORT,
-            SOMAXCONN, (struct sockaddr *)&tcpladdr, sizeof(struct sockaddr_in)
-    );
-    if (tcplistener == NULL) {
-        printf("%s [tcp] listen socket: (%d) %s\n", logerr(ctime), errno, strerror_r(errno, error, 64));
-        exit(errno);
-    }
     int optval = 1;
-    if (setsockopt(evconnlistener_get_fd(tcplistener), SOL_IP, IP_TRANSPARENT, &optval, sizeof(optval)) == -1) {
-        printf("%s [tcp] setsockopt(IP_TRANSPARENT) for %d: (%d) %s\n", logerr(ctime), evconnlistener_get_fd(tcplistener), errno, strerror_r(errno, error, 64));
-        exit(errno);
+    struct evconnlistener *tcplistener = NULL;
+
+    if (arg != (void *)2) {
+        tcplistener = evconnlistener_new_bind(
+                base, tcp_newconn_cb, NULL,
+                LEV_OPT_CLOSE_ON_FREE | LEV_OPT_REUSEABLE | LEV_OPT_REUSEABLE_PORT,
+                SOMAXCONN, (struct sockaddr *)&tcpladdr, sizeof(struct sockaddr_in)
+        );
+
+        if (tcplistener == NULL) {
+            printf("%s [tcp] listen socket: (%d) %s\n", logerr(ctime), errno, strerror_r(errno, error, 64));
+            exit(errno);
+        }
+
+        if (setsockopt(evconnlistener_get_fd(tcplistener), SOL_IP, IP_TRANSPARENT, &optval, sizeof(optval)) == -1) {
+            printf("%s [tcp] setsockopt(IP_TRANSPARENT) for %d: (%d) %s\n", logerr(ctime), evconnlistener_get_fd(tcplistener), errno, strerror_r(errno, error, 64));
+            exit(errno);
+        }
     }
 
-    if (arg == (void *)1) {
+    if (arg != NULL) {
         udplsock = socket(AF_INET, SOCK_DGRAM, 0);
         evutil_make_socket_nonblocking(udplsock);
 
@@ -484,14 +516,17 @@ void *service(void *arg) {
 
     event_base_dispatch(base);
 
-    if (arg == (void *)1) {
+    if (arg != NULL) {
         udpnode_clear();
         close(udplsock);
         event_free(udplev);
         bufferevent_free(udpbev);
     }
 
-    evconnlistener_free(tcplistener);
+    if (arg != (void *)2) {
+        evconnlistener_free(tcplistener);
+    }
+
     event_base_free(base);
     libevent_global_shutdown();
 
@@ -535,7 +570,7 @@ void tcp_newconn_cb(struct evconnlistener *listener, int sock, struct sockaddr *
     bufferevent_setcb(clntbev, NULL, NULL, tcp_sendreq_cb, clntarg);
     bufferevent_setcb(destbev, NULL, NULL, tcp_sendreq_cb, destarg);
 
-    bufferevent_enable(clntbev, EV_WRITE);
+    bufferevent_enable(clntbev, EV_READ | EV_WRITE);
     bufferevent_enable(destbev, EV_READ | EV_WRITE);
     
     bufferevent_setwatermark(clntbev, EV_READ, 0, BUFSIZ_FOR_BEV);
@@ -652,30 +687,27 @@ void tcp_recvres_cb(struct bufferevent *bev, void *arg) {
     TCPArg *othrarg = NULL;
     bufferevent_getcb(thisarg->bev, NULL, NULL, NULL, (void **)&othrarg);
     bufferevent_setcb(thisarg->bev, tcp_forward_cb, NULL, tcp_sendreq_cb, othrarg);
-    bufferevent_enable(thisarg->bev, EV_READ | EV_WRITE);
 }
 
 void tcp_forward_cb(struct bufferevent *bev, void *arg) {
     TCPArg *thisarg = arg;
     struct evbuffer *input = bufferevent_get_input(bev);
     struct evbuffer *output = bufferevent_get_output(thisarg->bev);
-
     evbuffer_add_buffer(output, input);
-
     if (evbuffer_get_length(output) >= BUFSIZ_FOR_BEV) {                             
         TCPArg *othrarg = NULL;
         bufferevent_getcb(thisarg->bev, NULL, NULL, NULL, (void **)&othrarg);
-        bufferevent_setcb(thisarg->bev, tcp_forward_cb, tcp_overbuf_cb, tcp_sendreq_cb, othrarg);
-        bufferevent_setwatermark(thisarg->bev, EV_WRITE, BUFSIZ_FOR_BEV / 2, 0);
         bufferevent_disable(bev, EV_READ);
+        bufferevent_setwatermark(thisarg->bev, EV_WRITE, BUFSIZ_FOR_BEV / 2, 0);
+        bufferevent_setcb(thisarg->bev, tcp_forward_cb, tcp_overbuf_cb, tcp_sendreq_cb, othrarg);
     }
 }
 
 void tcp_overbuf_cb(struct bufferevent *bev, void *arg) {         
     TCPArg *thisarg = arg;
-    bufferevent_setcb(bev, tcp_forward_cb, NULL, tcp_sendreq_cb, arg);
+    bufferevent_enable(thisarg->bev, EV_READ | EV_WRITE);
     bufferevent_setwatermark(bev, EV_WRITE, 0, 0);
-    bufferevent_enable(thisarg->bev, EV_READ);
+    bufferevent_setcb(bev, tcp_forward_cb, NULL, tcp_sendreq_cb, arg);
 }
 
 void udp_events_cb(struct bufferevent *bev, short events, void *arg) {
@@ -930,7 +962,7 @@ void udp_response_cb(struct bufferevent *bev, void *arg) {
         }
 
         int eport = strtol(eportptr, NULL, 10);
-        if (eport < 0 || eport > 65535) {
+        if (eport <= 0 || eport > 65535) {
             printf("%s [udp] bad response: %s:%d\n", logerr(ctime), servhost, servport);
             free(response);
             return;

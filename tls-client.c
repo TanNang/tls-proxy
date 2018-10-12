@@ -570,7 +570,6 @@ void tcp_newconn_cb(struct evconnlistener *listener, int sock, struct sockaddr *
     bufferevent_setcb(clntbev, NULL, NULL, tcp_sendreq_cb, clntarg);
     bufferevent_setcb(destbev, NULL, NULL, tcp_sendreq_cb, destarg);
 
-    bufferevent_enable(clntbev, EV_READ | EV_WRITE);
     bufferevent_enable(destbev, EV_READ | EV_WRITE);
     
     bufferevent_setwatermark(clntbev, EV_READ, 0, BUFSIZ_FOR_BEV);
@@ -687,6 +686,7 @@ void tcp_recvres_cb(struct bufferevent *bev, void *arg) {
     bufferevent_setcb(bev, tcp_forward_cb, NULL, tcp_sendreq_cb, arg);
 
     TCPArg *othrarg = NULL;
+    bufferevent_enable(thisarg->bev, EV_READ | EV_WRITE);
     bufferevent_getcb(thisarg->bev, NULL, NULL, NULL, (void **)&othrarg);
     bufferevent_setcb(thisarg->bev, tcp_forward_cb, NULL, tcp_sendreq_cb, othrarg);
 }

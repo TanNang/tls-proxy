@@ -300,7 +300,7 @@ void new_events_cb(struct bufferevent *bev, short events, void *arg) {
     socklen_t addrlen = sizeof(clntaddr);
     getpeername(bufferevent_getfd(bev), (struct sockaddr *)&clntaddr, &addrlen);
 
-    if (events & BEV_EVENT_ERROR) {
+    if (events & BEV_EVENT_ERROR && errno != 0) {
         char error[64] = {0};
         printf("%s [srv] error on %s:%d: (%d) %s\n", logerr(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port), errno, strerror_r(errno, error, 64));
     }
@@ -462,7 +462,7 @@ void tcp_events_cb(struct bufferevent *bev, short events, void *arg) {
         return;
     }
 
-    if (events & BEV_EVENT_ERROR) {
+    if (events & BEV_EVENT_ERROR && errno != 0) {
         char error[64] = {0};
         printf("%s [tcp] error on %s:%d: (%d) %s\n", logerr(ctime), inet_ntoa(thisaddr.sin_addr), ntohs(thisaddr.sin_port), errno, strerror_r(errno, error, 64));
     }
@@ -483,7 +483,7 @@ void udp_events_cb(struct bufferevent *bev, short events, void *arg) {
     socklen_t addrlen = sizeof(clntaddr);
     getpeername(bufferevent_getfd(bev), (struct sockaddr *)&clntaddr, &addrlen);
 
-    if (events & BEV_EVENT_ERROR) {
+    if (events & BEV_EVENT_ERROR && errno != 0) {
         char error[64] = {0};
         printf("%s [udp] error on %s:%d: (%d) %s\n", logerr(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port), errno, strerror_r(errno, error, 64));
     }

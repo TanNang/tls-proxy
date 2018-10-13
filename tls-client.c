@@ -56,14 +56,18 @@ void tcp_sendreq_cb(struct bufferevent *bev, short events, void *arg);
 void tcp_recvres_cb(struct bufferevent *bev, void *arg);
 void tcp_forward_cb(struct bufferevent *bev, void *arg);
 void tcp_overbuf_cb(struct bufferevent *bev, void *arg);
-void tcp_prefree_cb(struct bufferevent *bev, void *arg);
-void tcp_timeout_cb(struct bufferevent *bev, short events, void *arg);
+void tcp_timeout_cb(int sock, short events, void *arg);
 
 void udp_events_cb(struct bufferevent *bev, short events, void *arg);
 void udp_estabed_cb(struct bufferevent *bev, void *arg);
 void udp_timeout_cb(int sock, short events, void *arg);
 void udp_request_cb(int sock, short events, void *arg);
 void udp_response_cb(struct bufferevent *bev, void *arg);
+
+typedef struct {
+    struct event       *ev;
+    struct bufferevent *bev;
+} EVArg;
 
 typedef struct {
     char                addr[16];
@@ -660,11 +664,13 @@ void tcp_sendreq_cb(struct bufferevent *bev, short events, void *arg) {
         bufferevent_getcb(thisarg->bev, NULL, NULL, NULL, (void **)&othrarg);
 
         bufferevent_free(bev);
-        bufferevent_setwatermark(thisarg->bev, EV_WRITE, 0, 0);
-        bufferevent_setcb(thisarg->bev, NULL, tcp_prefree_cb, tcp_timeout_cb, NULL);
+        bufferevent_setcb(thisarg->bev, NULL, NULL, NULL, NULL);
 
+        EVArg *evarg = calloc(1, sizeof(EVArg));
+        struct events *ev = event_new(bufferevent_get_base(thisarg->bev), -1, EV_TIMEOUT, tcp_timeout_cb, evarg);
+        evarg->ev = ev; evarg->bev = thisarg->bev;
         struct timeval tv = {1, 0};
-        bufferevent_set_timeouts(thisarg->bev, NULL, &tv);
+        event_add(ev, &tv);
 
         free(thisarg);
         free(othrarg);
@@ -738,14 +744,12 @@ void tcp_overbuf_cb(struct bufferevent *bev, void *arg) {
     bufferevent_setcb(bev, tcp_forward_cb, NULL, tcp_sendreq_cb, arg);
 }
 
-void tcp_prefree_cb(struct bufferevent *bev, void *arg) {
-    (void) arg;
-    bufferevent_free(bev);
-}
-
-void tcp_timeout_cb(struct bufferevent *bev, short events, void *arg) {
-    (void) events; (void) arg;
-    bufferevent_free(bev);
+void tcp_timeout_cb(int sock, short events, void *arg) {
+    (void) sock; (void) events;
+    EVArg *evarg = arg;
+    bufferevent_free(evarg->bev);
+    event_free(evarg->ev);
+    free(evarg);
 }
 
 void udp_events_cb(struct bufferevent *bev, short events, void *arg) {

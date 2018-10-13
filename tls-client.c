@@ -667,7 +667,7 @@ void tcp_sendreq_cb(struct bufferevent *bev, short events, void *arg) {
         bufferevent_setwatermark(thisarg->bev, EV_WRITE, 0, 0);
         bufferevent_setcb(thisarg->bev, NULL, tcp_prefree_cb, tcp_sendreq_cb, NULL);
 
-        struct timeval tv = {1, 500 * 1000}; // 1500 ms
+        struct timeval tv = {3, 0}; // 3 s
         bufferevent_set_timeouts(thisarg->bev, NULL, &tv);
 
         free(thisarg);

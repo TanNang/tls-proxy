@@ -184,4 +184,57 @@ usage: tls-client <OPTIONS>. OPTIONS have these:
 最后，执行 `systemctl daemon-reload` 重载服务文件，然后执行 `systemctl start tls-client.service` 启动 tls-client。
 
 **配置 iptables 规则**
-// TODO
+
+`tls-client` 默认监听地址：`127.0.0.1:60080/tcp`、`127.0.0.1:60080/udp`；TCP 和 UDP 的透明代理都必须使用 iptables-TPROXY 方式（注意不是 iptables-REDIRECT）；这里给个简单的 bash 脚本，示例如何使用 iptables-TPROXY 来透明代理本机以及内网的 TCP 和 UDP 流量（没错，tls-client 一般用在 Linux 网关上，提供全局透明代理，当然也可以在普通 Linux 主机上使用，代理本机的 TCP 和 UDP）。注意，此脚本只是作为一个例子，实际上我们还需要配置分流规则（如 gfwlist、chnroute），如果你需要分流的话，请使用 [ss-tproxy](https://github.com/zfl9/ss-tproxy) 代理脚本。
+
+```bash
+#!/bin/bash
+
+server='www.example.com' # 服务器的域名
+intranet_nic='ens33'     # 本机内网网卡
+extranet_nic='ens33'     # 本机外网网卡
+
+function start {
+    sytemctl start tls-client.service
+
+    iptables -t mangle -N SETMARK
+    iptables -t mangle -A SETMARK -d 0/8        -j RETURN
+    iptables -t mangle -A SETMARK -d 10/8       -j RETURN
+    iptables -t mangle -A SETMARK -d 127/8      -j RETURN
+    iptables -t mangle -A SETMARK -d 169.254/16 -j RETURN
+    iptables -t mangle -A SETMARK -d 172.16/12  -j RETURN
+    iptables -t mangle -A SETMARK -d 192.168/16 -j RETURN
+    iptables -t mangle -A SETMARK -d 224/4      -j RETURN
+    iptables -t mangle -A SETMARK -d 240/4      -j RETURN
+    iptables -t mangle -A SETMARK -d $server    -j RETURN
+    iptables -t mangle -A SETMARK -j MARK --set-mark 0x2333
+
+    iptables -t mangle -A OUTPUT -o $extranet_nic -p tcp -j SETMARK
+    iptables -t mangle -A OUTPUT -o $extranet_nic -p udp -j SETMARK
+
+    iptables -t mangle -A PREROUTING -i $intranet_nic -p tcp -j SETMARK
+    iptables -t mangle -A PREROUTING -i $intranet_nic -p udp -j SETMARK
+
+    iptables -t mangle -A PREROUTING -m mark --mark 0x2333 -p tcp -j TPROXY --on-ip 127.0.0.1 --on-port 60080
+    iptables -t mangle -A PREROUTING -m mark --mark 0x2333 -p udp -j TPROXY --on-ip 127.0.0.1 --on-port 60080
+
+    ip route add local 0/0 dev lo table 100
+    ip rule add fwmark 0x2333 table 100
+}
+
+function stop {
+    ip rule del table 100 &>/dev/null
+    ip route flush table 100 &>/dev/null
+
+    iptables -t mangle -F
+    iptables -t mangle -X
+
+    systemctl stop tls-client.service
+}
+
+case $1 in
+    start) start;;
+    stop)  stop;;
+    *) echo "usage: $(basename $0) start|stop"; exit 1;;
+esac
+```

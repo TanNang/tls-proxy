@@ -1,0 +1,13 @@
+[Unit]
+Description=tls-client
+Requires=network.target network-online.target
+After=network.target network-online.target
+
+[Service]
+Type=simple
+ExecStart=/bin/sh -c "/usr/local/bin/tls-client -j2 -s www.example.com -c /etc/ssl/cert.pem -P /tls-proxy -H $'Some-Header: some_header_value\r\n'"
+Restart=on-failure
+RestartSec=3s
+
+[Install]
+WantedBy=multi-user.target

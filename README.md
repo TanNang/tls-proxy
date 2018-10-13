@@ -6,7 +6,7 @@
 
 `tls-proxy` 支持 TCP 和 UDP 协议的代理（与 v2ray 一样，UDP 流量使用 TCP 传输，尽可能减少特征），通信过程：<br>
 **`source-socket <-> tls-client <-> web-server(eg: nginx) <-> tls-server <-> destination-socket`**<br>
-`tls-client` 与 `web-server` 之间使用 HTTPS 协议（TLS1.2），`web-server` 与 `tls-client` 之间使用 websocket 协议。
+`tls-client` 与 `web-server` 之间使用 HTTPS 协议（TLS1.2），`web-server` 与 `tls-server` 之间使用 websocket 协议。
 
 ## 版本历史
 **tls-proxy v1.0**<br>

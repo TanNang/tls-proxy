@@ -191,8 +191,8 @@ usage: tls-client <OPTIONS>. OPTIONS have these:
 #!/bin/bash
 
 server='www.example.com' # 服务器的域名
-intranet_nic='ens33'     # 本机内网网卡
-extranet_nic='ens33'     # 本机外网网卡
+intranet_nic='lan0'      # 本机内网网卡
+extranet_nic='wan0'      # 本机外网网卡
 
 function start {
     sytemctl start tls-client.service

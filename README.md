@@ -159,7 +159,7 @@ server {
 
 **配置 tls-client**
 
-将 `tls-proxy` 目录下的 `tls-client.service` systemd 服务文件拷贝到 `/etc/systemd/system/` 目录下，然后使用文本编辑器打开 `/etc/systemd/system/tls-client.service` 文件，修改 tls-client 的参数，命令行参数有这些（`tls-client -h` 可查看）：
+将 `tls-proxy` 目录下的 `tls-client.service` systemd 服务文件拷贝到 `/etc/systemd/system/` 目录下，然后使用文本编辑器打开 `/etc/systemd/system/tls-client.service` 文件，主要需要修改 tls-client 的命令行参数，目前 tls-client 的命令行参数有：
 ```bash
 $ tls-client -h
 usage: tls-client <OPTIONS>. OPTIONS have these:

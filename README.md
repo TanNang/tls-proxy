@@ -84,7 +84,7 @@ rm -fr /tmp/tls-proxy
 
 SSL 证书免费的有很多，如果你没有 SSL 证书，请先申请一张（不建议使用自签发的 SSL 证书，因为不会被 tls-client 所信任，除非你将自签发的根证书添加到 tls-client 主机的 CA 文件中）；为什么需要一个域名？因为 tls-client 强制校验 SSL 证书对应的域名，如果 SSL 证书上的域名与指定的域名不一致，则会断开与 Web 服务器的连接；Web 服务器需要配置 HTTPS，以下的 Web 服务器均以 Nginx 为例，其它服务器请自行斟酌。
 
-**配置 Nginx**
+**配置 Nginx**<br>
 1、修改 `/etc/nginx/nginx.conf`，在 `http` 配置段中添加如下配置（根据情况自行修改）：
 ```nginx
 http {

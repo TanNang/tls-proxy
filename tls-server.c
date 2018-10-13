@@ -504,7 +504,7 @@ void tcp_events_cb(struct bufferevent *bev, short events, void *arg) {
         bufferevent_free(bev);
         bufferevent_setwatermark(arg, EV_WRITE, 0, 0);
         bufferevent_setcb(arg, NULL, tcp_close_cb, tcp_events_cb, NULL);
-        struct timeval tv = {0, 500 * 1000}; // 500 ms
+        struct timeval tv = {1, 500 * 1000}; // 1500 ms
         bufferevent_set_timeouts(arg, NULL, &tv);
     }
 }

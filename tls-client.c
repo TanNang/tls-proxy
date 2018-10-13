@@ -667,7 +667,7 @@ void tcp_sendreq_cb(struct bufferevent *bev, short events, void *arg) {
         bufferevent_setcb(thisarg->bev, NULL, NULL, NULL, NULL);
 
         EVArg *evarg = calloc(1, sizeof(EVArg));
-        struct events *ev = event_new(bufferevent_get_base(thisarg->bev), -1, EV_TIMEOUT, tcp_timeout_cb, evarg);
+        struct event *ev = event_new(bufferevent_get_base(thisarg->bev), -1, EV_TIMEOUT, tcp_timeout_cb, evarg);
         evarg->ev = ev; evarg->bev = thisarg->bev;
         struct timeval tv = {1, 0};
         event_add(ev, &tv);

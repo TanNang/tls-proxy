@@ -28,7 +28,7 @@
  - [libevent](https://github.com/libevent/libevent)
 
 ## 编译方法
-> 以 linux x86_64 为例，其他平台请酌情修改
+> 本地编译，以 linux x86_64 为例
 
 ```bash
 # uthash
@@ -61,8 +61,8 @@ make && make install # 检查是否存在 /tmp/libevent/lib/libevent_openssl.a�
 cd /tmp
 git clone https://github.com/zfl9/tls-proxy
 cd tls-proxy
-gcc -I/tmp/uthash/include -I/tmp/base64/include -I/tmp/libevent/include -std=c11 -Wall -Wextra -Wno-format-overflow -O3 -s -lpthread -o tls-server tls-server.c /tmp/base64/lib/libbase64.o /tmp/libevent/lib/libevent.a
-gcc -I/tmp/uthash/include -I/tmp/base64/include -I/tmp/libevent/include -I/tmp/openssl/include -std=c11 -Wall -Wextra -Wno-format-overflow -O3 -s -ldl -lpthread -o tls-client tls-client.c /tmp/base64/lib/libbase64.o /tmp/libevent/lib/libevent.a /tmp/libevent/lib/libevent_openssl.a /tmp/openssl/lib/libssl.a /tmp/openssl/lib/libcrypto.a
+gcc -I/tmp/uthash/include -I/tmp/base64/include -I/tmp/libevent/include -std=c11 -Wall -Wextra -Wno-format-overflow -O3 -s -pthread -o tls-server tls-server.c /tmp/base64/lib/libbase64.o /tmp/libevent/lib/libevent.a
+gcc -I/tmp/uthash/include -I/tmp/base64/include -I/tmp/libevent/include -I/tmp/openssl/include -std=c11 -Wall -Wextra -Wno-format-overflow -O3 -s -pthread -ldl -o tls-client tls-client.c /tmp/base64/lib/libbase64.o /tmp/libevent/lib/libevent.a /tmp/libevent/lib/libevent_openssl.a /tmp/openssl/lib/libssl.a /tmp/openssl/lib/libcrypto.a
 cp -af tls-client tls-server /usr/local/bin
 
 # delete files
@@ -72,6 +72,46 @@ rm -fr /tmp/base64
 rm -fr /tmp/openssl*
 rm -fr /tmp/libevent*
 rm -fr /tmp/tls-proxy
+```
+
+> 交叉编译，在 linux x86_64 上编译 linux aarch64 上用的 tls-proxy（RPi3B）
+
+```bash
+# 交叉编译工具链的前缀
+ARCH='aarch64-linux-gnu'
+
+# uthash
+cd /tmp
+git clone https://github.com/troydhanson/uthash
+
+# base64
+cd /tmp
+git clone https://github.com/aklomp/base64
+cd base64
+make CC=$ARCH-gcc LD=$ARCH-ld OBJCOPY=$ARCH-objcopy
+
+# openssl
+cd /tmp
+wget https://www.openssl.org/source/openssl-1.1.0i.tar.gz
+tar xvf openssl-1.1.0i.tar.gz
+cd openssl-1.1.0i
+./Configure linux-aarch64 --prefix=/tmp/openssl --openssldir=/tmp/openssl no-shared
+make CC=$ARCH-gcc && make install
+
+# libevent
+cd /tmp
+wget https://github.com/libevent/libevent/releases/download/release-2.1.8-stable/libevent-2.1.8-stable.tar.gz 
+tar xvf libevent-2.1.8-stable.tar.gz
+cd libevent-2.1.8-stable
+./configure --host=$ARCH --prefix=/tmp/libevent --enable-static=yes --enable-shared=no CPPFLAGS='-I/tmp/openssl/include' LDFLAGS='-L/tmp/openssl/lib' LIBS='-ldl -lssl -lcrypto'
+make && make install
+
+# tls-proxy
+cd /tmp
+git clone https://github.com/zfl9/tls-proxy
+cd tls-proxy
+$ARCH-gcc -I/tmp/uthash/include -I/tmp/base64/include -I/tmp/libevent/include -std=c11 -Wall -Wextra -Wno-format-overflow -O3 -s -pthread -o tls-server tls-server.c /tmp/base64/lib/libbase64.o /tmp/libevent/lib/libevent.a
+$ARCH-gcc -I/tmp/uthash/include -I/tmp/base64/include -I/tmp/libevent/include -I/tmp/openssl/include -std=c11 -Wall -Wextra -Wno-format-overflow -O3 -s -pthread -ldl -o tls-client tls-client.c /tmp/base64/lib/libbase64.o /tmp/libevent/lib/libevent.a /tmp/libevent/lib/libevent_openssl.a /tmp/openssl/lib/libssl.a /tmp/openssl/lib/libcrypto.a
 ```
 
 ## 使用方法

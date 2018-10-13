@@ -238,3 +238,5 @@ case $1 in
     *) echo "usage: $(basename $0) start|stop"; exit 1;;
 esac
 ```
+
+本机的 DNS 需要修改为 `8.8.8.8`、`8.8.4.4` 等国外 DNS 服务器（`/etc/resolv.conf`），然后 `curl ip.cn` 测试吧。

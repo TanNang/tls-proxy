@@ -108,6 +108,8 @@ http {
 2、使用 openssl 生成 dhparam.pem 文件（`/etc/nginx/ssl/dhparam.pem`）
 ```bash
 # 需要执行很长时间，请不要中断它
+mkdir -p /etc/nginx/ssl
+cd /etc/nginx/ssl
 openssl dhparam -out dhparam.pem 4096
 ```
 

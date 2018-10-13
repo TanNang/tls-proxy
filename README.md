@@ -153,6 +153,8 @@ server {
 
 4、使用 `nginx -t` 检查配置文件是否有语法错误，然后 `systemctl reload nginx.service` 使其生效。
 
-5、将 `tls-proxy` 目录下的 `tls-server.service` 拷贝到 `/etc/systemd/system/` 目录下，`systemctl daemon-reload` 生效。`tls-server` 默认启用一个工作线程（`-j` 参数），而 `tls-server.service` 服务文件中，默认设置的是 `-j2` 也就是两个工作线程，一般推荐使用 `1~4` 个工作线程，再多也没啥用，浪费资源。如果需要修改线程数，请编辑 `/etc/systemd/system/tls-server.service` 文件，将 `-j2` 改为 `-jN`（N 为你想设置的线程数），注意，修改 service 文件之后需要执行 `systemctl daemon-reload` 生效。最后，执行 `systemctl start tls-server.service` 来启动 tls-server。
+**配置 tls-server**
+
+将 `tls-proxy` 目录下的 `tls-server.service` 拷贝到 `/etc/systemd/system/` 目录下，`systemctl daemon-reload` 生效。`tls-server` 默认启用一个工作线程（`-j` 参数），而 `tls-server.service` 服务文件中，默认设置的是 `-j2` 也就是两个工作线程，一般推荐使用 `1~4` 个工作线程，再多也没啥用，浪费资源。如果需要修改线程数，请编辑 `/etc/systemd/system/tls-server.service` 文件，将 `-j2` 改为 `-jN`（N 为你想设置的线程数），注意，修改 service 文件之后需要执行 `systemctl daemon-reload` 生效。最后，执行 `systemctl start tls-server.service` 来启动 tls-server。
 
 // TODO

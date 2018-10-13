@@ -24,9 +24,13 @@
  - [libevent](https://github.com/libevent/libevent)
 
 ## 编译方法
-> 这里以 linux x86_64 为例，其他平台请酌情修改（貌似需要安装 `openssl-dev`、`openssl-devel`？）。
+> 以 linux x86_64 为例，其他平台请酌情修改
 
 ```bash
+# uthash
+cd /tmp
+git clone https://github.com/troydhanson/uthash
+
 # base64
 cd /tmp
 git clone https://github.com/aklomp/base64
@@ -38,7 +42,7 @@ cd /tmp
 wget https://www.openssl.org/source/openssl-1.1.0i.tar.gz
 tar xvf openssl-1.1.0i.tar.gz
 cd openssl-1.1.0i
-./Configure linux-x86_64 --prefix=/tmp/openssl --openssldir=/tmp/openssl no-ssl3 no-shared
+./Configure linux-x86_64 --prefix=/tmp/openssl --openssldir=/tmp/openssl no-ssl3 no-shared # for linux x86_64
 make && make install
 
 # libevent
@@ -47,18 +51,19 @@ wget https://github.com/libevent/libevent/releases/download/release-2.1.8-stable
 tar xvf libevent-2.1.8-stable.tar.gz
 cd libevent-2.1.8-stable
 ./configure --prefix=/tmp/libevent --enable-static=yes --enable-shared=no CPPFLAGS='-I/tmp/openssl/include' LDFLAGS='-L/tmp/openssl/lib' LIBS='-ldl -lssl -lcrypto'
-make && make install
+make && make install # 检查是否存在 /tmp/libevent/lib/libevent_openssl.a，如果没有，请先安装 openssl 依赖库 (openssl-devel)
 
 # tls-proxy
 cd /tmp
 git clone https://github.com/zfl9/tls-proxy
 cd tls-proxy
-gcc -I/tmp/base64/include -I/tmp/libevent/include -std=c11 -Wall -Wextra -Os -s -lpthread -o tls-server tls-server.c /tmp/base64/lib/libbase64.o /tmp/libevent/lib/libevent.a
-gcc -I/tmp/base64/include -I/tmp/libevent/include -I/tmp/openssl/include -std=c11 -Wall -Wextra -Os -s -ldl -lpthread -o tls-client tls-client.c /tmp/base64/lib/libbase64.o /tmp/libevent/lib/libevent.a /tmp/libevent/lib/libevent_openssl.a /tmp/openssl/lib/libssl.a /tmp/openssl/lib/libcrypto.a
+gcc -I/tmp/uthash/include -I/tmp/base64/include -I/tmp/libevent/include -std=c11 -Wall -Wextra -Wno-format-overflow -O3 -s -lpthread -o tls-server tls-server.c /tmp/base64/lib/libbase64.o /tmp/libevent/lib/libevent.a
+gcc -I/tmp/uthash/include -I/tmp/base64/include -I/tmp/libevent/include -I/tmp/openssl/include -std=c11 -Wall -Wextra -Wno-format-overflow -O3 -s -ldl -lpthread -o tls-client tls-client.c /tmp/base64/lib/libbase64.o /tmp/libevent/lib/libevent.a /tmp/libevent/lib/libevent_openssl.a /tmp/openssl/lib/libssl.a /tmp/openssl/lib/libcrypto.a
 cp -af tls-client tls-server /usr/local/bin
 
 # delete files
 cd /
+rm -fr /tmp/uthash
 rm -fr /tmp/base64
 rm -fr /tmp/openssl*
 rm -fr /tmp/libevent*

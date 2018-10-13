@@ -190,7 +190,7 @@ void setsockopt_tcp(int sock) {
         printf("%s [tcp] setsockopt(SO_KEEPALIVE) for %d: (%d) %s\n", logerr(ctime), sock, errno, strerror_r(errno, error, 64));
     }
 
-    optval = 30;
+    optval = 15;
     if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPIDLE, &optval, sizeof(optval)) == -1) {
         printf("%s [tcp] setsockopt(TCP_KEEPIDLE) for %d: (%d) %s\n", logerr(ctime), sock, errno, strerror_r(errno, error, 64));
     }
@@ -199,7 +199,7 @@ void setsockopt_tcp(int sock) {
         printf("%s [tcp] setsockopt(TCP_KEEPINTVL) for %d: (%d) %s\n", logerr(ctime), sock, errno, strerror_r(errno, error, 64));
     }
 
-    optval = 3;
+    optval = 2;
     if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPCNT, &optval, sizeof(optval)) == -1) {
         printf("%s [tcp] setsockopt(TCP_KEEPCNT) for %d: (%d) %s\n", logerr(ctime), sock, errno, strerror_r(errno, error, 64));
     }

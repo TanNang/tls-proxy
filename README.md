@@ -181,4 +181,7 @@ usage: tls-client <OPTIONS>. OPTIONS have these:
 
 关于 tls-client 的 `-c <cafile_path>` 参数：前面说了，tls-client 会对 SSL 证书进行校验，确认 SSL 证书是否可信，所以 tls-client 需要知道本机的 CA 文件路径（每个发行版的 CA file 文件路径都不太相同，ArchLinux 中是 `/etc/ssl/cert.pem`）。为什么不取消证书验证这个步骤？原因不用我说吧，一切都是为了安全啊。如果你不知道当前系统的 CA 文件路径，请在 Bash 中执行 `curl -v https://www.baidu.com |& awk '/CAfile:/ {print $3}'` 命令，输出的字符串即为本机的 CA 文件路径（别跟我说 curl command not found，要么装 curl，要么自己找 CA file 去）。
 
+最后，执行 `systemctl daemon-reload` 重载服务文件，然后执行 `systemctl start tls-client.service` 启动 tls-client。
+
+**配置 iptables 规则**
 // TODO

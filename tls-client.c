@@ -601,6 +601,11 @@ void tcp_newconn_cb(struct evconnlistener *listener, int sock, struct sockaddr *
 void tcp_sendreq_cb(struct bufferevent *bev, short events, void *arg) {
     (void) bev; (void) events; (void) arg;
 
+    if (events & BEV_EVENT_TIMEOUT) {
+        bufferevent_free(bev);
+        return;
+    }
+
     char ctime[36] = {0};
     TCPArg *thisarg = arg;
 
@@ -660,7 +665,10 @@ void tcp_sendreq_cb(struct bufferevent *bev, short events, void *arg) {
 
         bufferevent_free(bev);
         bufferevent_setwatermark(thisarg->bev, EV_WRITE, 0, 0);
-        bufferevent_setcb(thisarg->bev, NULL, tcp_prefree_cb, NULL, NULL);
+        bufferevent_setcb(thisarg->bev, NULL, tcp_prefree_cb, tcp_sendreq_cb, NULL);
+
+        struct timeval tv = {0, 500 * 1000}; // 500 ms
+        bufferevent_set_timeouts(thisarg->bev, NULL, &tv);
 
         free(thisarg);
         free(othrarg);

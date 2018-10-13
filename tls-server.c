@@ -473,6 +473,11 @@ void tcp_write_cb(struct bufferevent *bev, void *arg) {
 }
 
 void tcp_events_cb(struct bufferevent *bev, short events, void *arg) {
+    if (events & BEV_EVENT_TIMEOUT) {
+        bufferevent_free(bev);
+        return;
+    }
+
     char ctime[36] = {0};
     struct sockaddr_in thisaddr;
     socklen_t addrlen = sizeof(thisaddr);
@@ -498,7 +503,9 @@ void tcp_events_cb(struct bufferevent *bev, short events, void *arg) {
         printf("%s [tcp] closed connect: %s:%d\n", loginf(ctime), inet_ntoa(othraddr.sin_addr), ntohs(othraddr.sin_port));
         bufferevent_free(bev);
         bufferevent_setwatermark(arg, EV_WRITE, 0, 0);
-        bufferevent_setcb(arg, NULL, tcp_close_cb, NULL, NULL);
+        bufferevent_setcb(arg, NULL, tcp_close_cb, tcp_events_cb, NULL);
+        struct timeval tv = {0, 500 * 1000}; // 500 ms
+        bufferevent_set_timeouts(arg, NULL, &tv);
     }
 }
 

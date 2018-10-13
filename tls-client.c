@@ -57,6 +57,7 @@ void tcp_recvres_cb(struct bufferevent *bev, void *arg);
 void tcp_forward_cb(struct bufferevent *bev, void *arg);
 void tcp_overbuf_cb(struct bufferevent *bev, void *arg);
 void tcp_prefree_cb(struct bufferevent *bev, void *arg);
+void tcp_timeout_cb(struct bufferevent *bev, short events, void *arg);
 
 void udp_events_cb(struct bufferevent *bev, short events, void *arg);
 void udp_estabed_cb(struct bufferevent *bev, void *arg);
@@ -601,11 +602,6 @@ void tcp_newconn_cb(struct evconnlistener *listener, int sock, struct sockaddr *
 void tcp_sendreq_cb(struct bufferevent *bev, short events, void *arg) {
     (void) bev; (void) events; (void) arg;
 
-    if (events & BEV_EVENT_TIMEOUT) {
-        bufferevent_free(bev);
-        return;
-    }
-
     char ctime[36] = {0};
     TCPArg *thisarg = arg;
 
@@ -665,9 +661,9 @@ void tcp_sendreq_cb(struct bufferevent *bev, short events, void *arg) {
 
         bufferevent_free(bev);
         bufferevent_setwatermark(thisarg->bev, EV_WRITE, 0, 0);
-        bufferevent_setcb(thisarg->bev, NULL, tcp_prefree_cb, tcp_sendreq_cb, NULL);
+        bufferevent_setcb(thisarg->bev, NULL, tcp_prefree_cb, tcp_timeouts_cb, NULL);
 
-        struct timeval tv = {3, 0}; // 3 s
+        struct timeval tv = {1, 0};
         bufferevent_set_timeouts(thisarg->bev, NULL, &tv);
 
         free(thisarg);
@@ -744,6 +740,11 @@ void tcp_overbuf_cb(struct bufferevent *bev, void *arg) {
 
 void tcp_prefree_cb(struct bufferevent *bev, void *arg) {
     (void) arg;
+    bufferevent_free(bev);
+}
+
+void tcp_timeout_cb(struct bufferevent *bev, short events, void *arg) {
+    (void) events; (void) arg;
     bufferevent_free(bev);
 }
 

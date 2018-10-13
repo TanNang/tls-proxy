@@ -46,6 +46,7 @@ void tcp_read_cb(struct bufferevent *bev, void *arg);
 void tcp_write_cb(struct bufferevent *bev, void *arg);
 void tcp_close_cb(struct bufferevent *bev, void *arg);
 void tcp_events_cb(struct bufferevent *bev, short events, void *arg);
+void tcp_timeout_cb(struct bufferevent *bev, short events, void *arg);
 
 void udp_events_cb(struct bufferevent *bev, short events, void *arg);
 void udp_request_cb(struct bufferevent *bev, void *arg);
@@ -503,14 +504,19 @@ void tcp_events_cb(struct bufferevent *bev, short events, void *arg) {
         printf("%s [tcp] closed connect: %s:%d\n", loginf(ctime), inet_ntoa(othraddr.sin_addr), ntohs(othraddr.sin_port));
         bufferevent_free(bev);
         bufferevent_setwatermark(arg, EV_WRITE, 0, 0);
-        bufferevent_setcb(arg, NULL, tcp_close_cb, tcp_events_cb, NULL);
-        struct timeval tv = {3, 0}; // 3 s
+        bufferevent_setcb(arg, NULL, tcp_close_cb, tcp_timeout_cb, NULL);
+        struct timeval tv = {1, 0};
         bufferevent_set_timeouts(arg, NULL, &tv);
     }
 }
 
 void tcp_close_cb(struct bufferevent *bev, void *arg) {
     (void) arg;
+    bufferevent_free(bev);
+}
+
+void tcp_timeout_cb(struct bufferevent *bev, short events, void *arg) {
+    (void) events; (void) arg;
     bufferevent_free(bev);
 }
 

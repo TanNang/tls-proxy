@@ -4,6 +4,8 @@
 ## 简单介绍
 `tls-proxy` 可以看作为 V2Ray 的 `WebSocket + TLS + Web` 方案的 C 语言极简实现版，使用 `libevent2` 轻量级事件通知库编写。在硬件资源有限的环境中（如树莓派 3B，这也是我写 tls-proxy 的根本原因），tls-proxy 可以比 v2ray 占用更少的 CPU 以及内存资源，并且提供更快的响应速度和代理速度（但不降低安全性，我已尽量取其精华去其糟粕）。
 
+`tls-proxy` 支持 TCP 和 UDP 的透明代理（使用 TPROXY，而非 REDIRECT），通信过程：`tls-client <-> web-server(eg: nginx) <-> tls-server`，// TODO
+
 ## 版本历史
 **tls-proxy v1.0**<br>
 初始版本，TCP 和 UDP 都有问题（TCP 套接字处理不当，导致尾部数据丢失；UDP 实现过于简单粗暴，不支持 QUIC 协议），基本无法正常使用，所以此版本仅供娱乐。

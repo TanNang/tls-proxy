@@ -46,7 +46,7 @@ cd /tmp
 wget https://www.openssl.org/source/openssl-1.1.0i.tar.gz
 tar xvf openssl-1.1.0i.tar.gz
 cd openssl-1.1.0i
-./Configure linux-x86_64 --prefix=/tmp/openssl --openssldir=/tmp/openssl no-ssl3 no-shared # for linux x86_64
+./Configure linux-x86_64 --prefix=/tmp/openssl --openssldir=/tmp/openssl no-shared # for linux x86_64
 make && make install
 
 # libevent

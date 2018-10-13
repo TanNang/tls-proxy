@@ -155,6 +155,28 @@ server {
 
 **配置 tls-server**
 
-将 `tls-proxy` 目录下的 `tls-server.service` systemd 服务文件拷贝到 `/etc/systemd/system/` 目录下，然后执行 `systemctl daemon-reload` 使其生效。`tls-server` 默认只启用一个工作线程（`-j` 参数），而在 `tls-server.service` 服务文件中，默认设置的是 `-j2`，也就是两个工作线程，一般推荐使用 `1 ~ 4` 个工作线程，再多也没啥用，浪费资源。如果需要修改线程数，请编辑 `/etc/systemd/system/tls-server.service` 文件，将 `-j2` 改为 `-jN`（N 为你想设置的线程数），注意，修改 service 文件之后需要执行 `systemctl daemon-reload` 生效。最后，执行 `systemctl start tls-server.service` 来启动 tls-server。
+将 `tls-proxy` 目录下的 `tls-server.service` systemd 服务文件拷贝到 `/etc/systemd/system/` 目录下，然后执行 `systemctl daemon-reload` 使其生效。`tls-server` 默认只启用一个工作线程（`-j` 参数），而在 `tls-server.service` 服务文件中，默认设置的是 `-j2`，也就是两个工作线程，一般推荐使用 `1 ~ 4` 个工作线程，再多也没啥用，浪费资源。如果需要修改线程数，请编辑 `/etc/systemd/system/tls-server.service` 服务文件，将 `-j2` 改为 `-jN`（N 为你想设置的线程数），注意，修改 service 文件之后需要执行 `systemctl daemon-reload` 生效。最后，执行 `systemctl start tls-server.service` 来启动 tls-server。
+
+**配置 tls-client**
+
+将 `tls-proxy` 目录下的 `tls-client.service` systemd 服务文件拷贝到 `/etc/systemd/system/` 目录下，然后编辑 `/etc/systemd/system/tls-client.service` 服务文件，修改 tls-client 的运行参数，不知道有什么参数的话，请在命令行中运行 `tls-client -h`，输出如下：
+```bash
+$ tls-client -h
+usage: tls-client <OPTIONS>. OPTIONS have these:
+ -s <server_host>        server host. can't use IP address
+ -p <server_port>        server port. the default port is 443
+ -c <cafile_path>        CA file location. eg: /etc/ssl/cert.pem
+ -P <request_uri>        websocket request line uri. eg: /tls-proxy
+ -H <request_header>     websocket request headers. allow multi line
+ -b <listen_address>     tcp & udp listen address. default: 127.0.0.1
+ -t <tcp_proxy_port>     tcp port (iptables xt_tproxy). default: 60080
+ -u <udp_proxy_port>     udp port (iptables xt_tproxy). default: 60080
+ -j <thread_numbers>     number of worker thread (for tcp). default: 1
+ -T                      disable tcp transparent proxy
+ -U                      disable udp transparent proxy
+ -v                      show version and exit
+ -h                      show help and exit
+```
+其中必须要指定的参数有：`-s` 指定服务器的域名、`-c` 指定本机 CA 文件路径、`-P` 请求的 URI。在这里的话，因为我们上面在 Nginx 中配置了自定义头部 `Some-Header: some-header-value\r\n` 头部，所以还需要指定一个 `-H` 参数，注意，此参数指定的 HTTP 头部必须以 `\r\n` 结尾，且必须放在 `$''` 里面，即 `-H $'Some-Header: some-header-value\r\n'`，允许有多个自定义头部，但你必须保证格式没有问题，否则 `tls-client` 会因为收到 `404 Not Found` 响应而提示 `bad response`。tls-client 和 tls-server 一样，默认都是启用一个工作线程，所以如果你需要启用多个线程，请指定 `-j` 参数（不要为什么奇怪 tls-client 的 UDP 监听端口只有一个，因为 UDP 始终都只有一个线程，也即 tls-client 的多线程是针对 TCP 的）。
 
 // TODO

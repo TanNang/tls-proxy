@@ -151,4 +151,8 @@ server {
 ```
 `/tls-proxy` 可以改为你喜欢的任意 URI；`tls-server` 默认监听地址为 `127.0.0.1:60080/tcp`；说明一下 `$http_some_header` 语句的作用：即使别人知道你的 URI，如果它没有设置正确的 HTTP 头部（在这里就是 `Some-Header` 咯，去掉开头的 `http_`，下划线换成连字符，大小写不敏感），并且对应的头部的值不是 `some_header_value`（这就相当于你的密码了，请任意发挥），那么还是白搭，Nginx 会返回 404 Not Found 给它（这种情况也适合于 GFW 的主动探测）。
 
+4、使用 `nginx -t` 检查配置文件是否有语法错误，然后 `systemctl reload nginx.service` 使其生效。
+
+5、将 `tls-proxy` 目录下的 `tls-server.service` 拷贝到 `/etc/systemd/system/` 目录下，`systemctl daemon-reload` 生效。`tls-server` 默认启用一个工作线程（`-j` 参数），而 `tls-server.service` 服务文件中，默认设置的是 `-j2` 也就是两个工作线程，一般推荐使用 `1~4` 个工作线程，再多也没啥用，浪费资源。如果需要修改线程数，请编辑 `/etc/systemd/system/tls-server.service` 文件，将 `-j2` 改为 `-jN`（N 为你想设置的线程数），注意，修改 service 文件之后需要执行 `systemctl daemon-reload` 生效。最后，执行 `systemctl start tls-server.service` 来启动 tls-server。
+
 // TODO

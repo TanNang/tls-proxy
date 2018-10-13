@@ -69,3 +69,6 @@ rm -fr /tmp/openssl*
 rm -fr /tmp/libevent*
 rm -fr /tmp/tls-proxy
 ```
+
+## 使用方法
+如果你会使用 v2ray 的 websocket + tls + web 模式，那么 tls-proxy 对你来说很容易上手，因为使用方法基本一致。// TODO

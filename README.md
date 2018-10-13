@@ -113,4 +113,41 @@ cd /etc/nginx/ssl
 openssl dhparam -out dhparam.pem 4096
 ```
 
+3、配置与 tls-server 相关的 vhost，根据实际情况修改
+```nginx
+server {
+    listen      80 reuseport fastopen=3 default_server;
+    server_name www.example.com;
+    return 301 https://www.example.com$request_uri;
+}
+
+server {
+    listen      443 ssl reuseport fastopen=3 default_server;
+    server_name www.example.com;
+
+    root    /srv/http/www.example.com;
+    index   index.html;
+
+    ssl                 on;
+    ssl_certificate     "/etc/nginx/ssl/www.example.com.crt";
+    ssl_certificate_key "/etc/nginx/ssl/www.example.com.key";
+
+    location ~* \.(jpg|jpeg|png|gif|ico|(css|js)(\?v=.*)?)$ {
+       expires 60d;
+    }
+
+    ## tls-proxy
+    location /tls-proxy {
+        if ($http_some_header != 'some_header_value') {
+            return 404;
+        }
+        proxy_read_timeout 30d;
+        proxy_http_version 1.1;
+        proxy_pass http://127.0.0.1:60080;
+        proxy_set_header Connection "Upgrade";
+        proxy_set_header Upgrade $http_upgrade;
+    }
+}
+```
+
 // TODO

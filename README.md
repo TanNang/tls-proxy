@@ -195,7 +195,7 @@ intranet_nic='lan0'      # 本机内网网卡
 extranet_nic='wan0'      # 本机外网网卡
 
 function start {
-    sytemctl start tls-client.service
+    systemctl start tls-client.service
 
     iptables -t mangle -N SETMARK
     iptables -t mangle -A SETMARK -d 0/8        -j RETURN

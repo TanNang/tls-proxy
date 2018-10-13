@@ -179,4 +179,6 @@ usage: tls-client <OPTIONS>. OPTIONS have these:
 ```
 其中必须要指定的参数有：`-s` 指定服务器的域名、`-c` 指定本机 CA 文件路径、`-P` 指定请求的 URI。因为我们在 Nginx 中配置了自定义头部 `Some-Header: some_header_value\r\n`，所以还需要指定一个 `-H` 参数，注意，此参数指定的 HTTP 头部必须以 `\r\n` 结尾，且必须放在 `$''` 里面（否则不会进行转义），即 `-H $'Some-Header: some_header_value\r\n'`，`-H` 参数中允许设置多个自定义头部（HTTP 协议使用 `\r\n` 作为行结束符）。如果头部设置不正确，则 `tls-client` 会因为收到 `404 Not Found` 响应而提示 `bad response`。tls-client 和 tls-server 一样，默认都是启用一个工作线程，所以如果你需要启用多个线程，请指定 `-j` 参数（不要奇怪 tls-client 的 UDP 监听线程为什么只有一个，因为我需要在内部保持 UDP 的状态，所以必须只能有一个 UDP 套接字，也就是说，tls-client 的 -j 参数只针对 TCP 代理套接字）。
 
+关于 tls-client 的 `-c <cafile_path>` 参数：前面说了，tls-client 会对 SSL 证书进行校验，确认 SSL 证书是否可信，所以 tls-client 需要知道本机的 CA 文件路径（每个发行版的 CA file 文件路径都不太相同，ArchLinux 中是 `/etc/ssl/cert.pem`）。为什么不取消证书验证这个步骤？原因不用我说吧，一切都是为了安全啊。如果你不知道当前系统的 CA 文件路径，请在 Bash 中执行 `curl -v https://www.baidu.com |& awk '/CAfile:/ {print $3}'` 命令，输出的字符串即为本机的 CA 文件路径（没有 curl？！自己想办法）。
+
 // TODO

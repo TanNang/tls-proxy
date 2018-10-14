@@ -41,11 +41,11 @@
            " -v                      show version and exit\n"\
            " -h                      show help and exit\n")
 
-#define UDP_HASH_LEN 1000
 #define UDP_HASH_PRE 100
+#define UDP_HASH_LEN 500
 #define UDP_RAW_BUFSIZ 1472
 #define UDP_ENC_BUFSIZ 1960
-#define BUFSIZ_FOR_BEV 524288
+#define BUFSIZ_FOR_BEV 262144
 #define WEBSOCKET_STATUS_LINE "HTTP/1.1 101 Switching Protocols"
 #define SSL_CIPHERS "ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-CHACHA20-POLY1305"
 
@@ -100,7 +100,7 @@ void udpnode_put(char *addr, int port) {
         strcpy(node->addr, addr);
         node->port = port;
         node->ev = event_new(udpbase, -1, EV_TIMEOUT, udp_timeout_cb, node->addr);
-        struct timeval tv = {5 * 60, 0}; // 300s
+        struct timeval tv = {120, 0};
         event_add(node->ev, &tv);
         HASH_ADD_STR(udphash, addr, node);
         if (HASH_COUNT(udphash) > UDP_HASH_LEN) {
@@ -115,7 +115,7 @@ void udpnode_put(char *addr, int port) {
         }
     } else {
         node->port = port;
-        struct timeval tv = {5 * 60, 0}; // 300s
+        struct timeval tv = {120, 0};
         event_add(node->ev, &tv);
         HASH_DEL(udphash, node);
         HASH_ADD_STR(udphash, addr, node);
@@ -126,7 +126,7 @@ UDPNode *udpnode_get(char *addr) {
     UDPNode *node = NULL;
     HASH_FIND_STR(udphash, addr, node);
     if (node == NULL) return node;
-    struct timeval tv = {5 * 60, 0}; // 300s
+    struct timeval tv = {120, 0};
     event_add(node->ev, &tv);
     HASH_DEL(udphash, node);
     HASH_ADD_STR(udphash, addr, node);

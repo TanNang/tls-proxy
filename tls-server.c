@@ -29,10 +29,10 @@
            " -h                     show help and exit\n")
 
 #define WEBSOCKET_RESPONSE "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
-#define BUFSIZ_FOR_BEV 524288
+#define BUFSIZ_FOR_BEV 262144
 #define UDP_RAW_BUFSIZ 1472
 #define UDP_ENC_BUFSIZ 1960
-#define UDP_HASH_LEN 1000
+#define UDP_HASH_LEN 500
 #define UDP_HASH_PRE 100
 
 static struct sockaddr_in servaddr;
@@ -702,7 +702,7 @@ void udp_request_cb(struct bufferevent *bev, void *arg) {
             udparg->bev = bev;
 
             struct event *ev = event_new(bufferevent_get_base(bev), esock, EV_READ | EV_TIMEOUT | EV_PERSIST, udp_response_cb, udparg);
-            struct timeval tv = {60 * 5, 0}; // 300s
+            struct timeval tv = {120, 0};
             event_add(ev, &tv);
 
             udpnode_put(arg, eport, ev);

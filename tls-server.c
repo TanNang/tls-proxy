@@ -29,7 +29,7 @@
            " -h                     show help and exit\n")
 
 #define WEBSOCKET_RESPONSE "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
-#define BUFSIZ_FOR_BEV 262144
+#define BUFSIZ_FOR_BEV 65536
 #define UDP_RAW_BUFSIZ 1472
 #define UDP_ENC_BUFSIZ 1960
 #define UDP_HASH_LEN 500

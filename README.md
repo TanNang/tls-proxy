@@ -47,15 +47,15 @@ wget https://www.openssl.org/source/openssl-1.1.0i.tar.gz
 tar xvf openssl-1.1.0i.tar.gz
 cd openssl-1.1.0i
 ./Configure linux-x86_64 --prefix=/tmp/openssl --openssldir=/tmp/openssl no-shared # for linux x86_64
-make && make install
+make -j`nproc` && make install -j`nproc`
 
 # libevent
 cd /tmp
-wget https://github.com/libevent/libevent/releases/download/release-2.1.8-stable/libevent-2.1.8-stable.tar.gz 
-tar xvf libevent-2.1.8-stable.tar.gz
-cd libevent-2.1.8-stable
-./configure --prefix=/tmp/libevent --enable-static=yes --enable-shared=no CPPFLAGS='-I/tmp/openssl/include' LDFLAGS='-L/tmp/openssl/lib' LIBS='-ldl -lssl -lcrypto'
-make && make install # 检查是否存在 /tmp/libevent/lib/libevent_openssl.a，如果没有，请先安装 openssl 依赖库 (openssl-devel)
+git clone https://github.com/libevent/libevent libevent-sources
+cd libevent-sources
+./autogen.sh
+./configure --prefix=/tmp/libevent --enable-shared=no --enable-static=yes --disable-samples --disable-debug-mode --disable-malloc-replacement CPPFLAGS='-I/tmp/openssl/include' LDFLAGS='-L/tmp/openssl/lib' LIBS='-lssl -lcrypto -ldl'
+make && make install
 
 # tls-proxy
 cd /tmp

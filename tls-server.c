@@ -99,7 +99,6 @@ void udpnode_put(UDPNode *hash, int port, struct event *ev) {
             }
         }
     } else {
-        if (node->port == 0) return;
         free(event_get_callback_arg(node->ev));
         close(event_get_fd(node->ev));
         event_free(node->ev);
@@ -120,15 +119,16 @@ UDPNode *udpnode_get(UDPNode *hash, int port) {
 }
 
 struct event *udpnode_getev(UDPNode *hash, int port) {
+    if (port == 0) return NULL;
     UDPNode *node = udpnode_get(hash, port);
     return (node == NULL) ? NULL : (node->ev);
 }
 
 void udpnode_del(UDPNode *hash, int port) {
+    if (port == 0) return;
     UDPNode *node = NULL;
     HASH_FIND_INT(hash, &port, node);
     if (node == NULL) return;
-    if (node->port == 0) return;
     HASH_DEL(hash, node);
     free(event_get_callback_arg(node->ev));
     close(event_get_fd(node->ev));
@@ -682,13 +682,10 @@ void udp_request_cb(struct bufferevent *bev, void *arg) {
             if (bind(esock, (struct sockaddr *)&esrcaddr, sizeof(esrcaddr)) == -1) {
                 char error[64] = {0};
                 printf("%s [udp] bind socket (any port): (%d) %s\n", logerr(ctime), errno, strerror_r(errno, error, 64));
-                printf("%s [udp] closed connect: %s:%d\n", loginf(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
-                bufferevent_free(bev);
-                udpnode_clear(arg);
                 free(request);
                 free(rawbuf);
                 close(esock);
-                return;
+                continue;
             }
 
             memset(&esrcaddr, 0, addrlen);
@@ -716,16 +713,12 @@ void udp_request_cb(struct bufferevent *bev, void *arg) {
         if (sendto(esock, rawbuf, rawlen, 0, (struct sockaddr *)&destaddr, addrlen) == -1) {
             char error[64] = {0};
             printf("%s [udp] sendto %s:%s: (%d) %s\n", logerr(ctime), raddrptr, rportptr, errno, strerror_r(errno, error, 64));
-            printf("%s [udp] closed connect: %s:%d\n", loginf(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
-            bufferevent_free(bev);
-            udpnode_clear(arg);
             free(request);
             free(rawbuf);
-            return;
+            continue;
         }
         printf("%s [udp] send %ld bytes data to %s:%s\n", loginf(ctime), rawlen, raddrptr, rportptr);
         free(rawbuf);
-
         free(request);
     }
 }

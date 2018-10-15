@@ -54,7 +54,7 @@ cd /tmp
 git clone https://github.com/libevent/libevent libevent-sources
 cd libevent-sources
 ./autogen.sh
-./configure --prefix=/tmp/libevent --enable-shared=no --enable-static=yes --disable-samples --disable-debug-mode --disable-malloc-replacement CPPFLAGS='-I/tmp/openssl/include' LDFLAGS='-L/tmp/openssl/lib' LIBS='-lssl -lcrypto -ldl'
+./configure --prefix=/tmp/libevent --enable-shared=no --enable-static=yes --disable-samples --disable-debug-mode --disable-malloc-replacement CPPFLAGS='-I/tmp/openssl/include' LDFLAGS='-L/tmp/openssl/lib' LIBS='-ldl -lssl -lcrypto'
 make && make install
 
 # tls-proxy
@@ -62,7 +62,7 @@ cd /tmp
 git clone https://github.com/zfl9/tls-proxy
 cd tls-proxy
 gcc -I/tmp/uthash/include -I/tmp/base64/include -I/tmp/libevent/include -std=c11 -Wall -Wextra -Wno-format-overflow -O3 -s -pthread -o tls-server tls-server.c /tmp/base64/lib/libbase64.o /tmp/libevent/lib/libevent.a
-gcc -I/tmp/uthash/include -I/tmp/base64/include -I/tmp/libevent/include -I/tmp/openssl/include -std=c11 -Wall -Wextra -Wno-format-overflow -O3 -s -pthread -ldl -o tls-client tls-client.c /tmp/base64/lib/libbase64.o /tmp/libevent/lib/libevent.a /tmp/libevent/lib/libevent_openssl.a /tmp/openssl/lib/libssl.a /tmp/openssl/lib/libcrypto.a
+gcc -I/tmp/uthash/include -I/tmp/base64/include -I/tmp/libevent/include -I/tmp/openssl/include -std=c11 -Wall -Wextra -Wno-format-overflow -O3 -s -pthread -o tls-client tls-client.c /tmp/base64/lib/libbase64.o /tmp/libevent/lib/libevent.a /tmp/libevent/lib/libevent_openssl.a /tmp/openssl/lib/libssl.a /tmp/openssl/lib/libcrypto.a -ldl
 cp -af tls-client tls-server /usr/local/bin
 
 # delete files

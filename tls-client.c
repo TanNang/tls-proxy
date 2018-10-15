@@ -41,6 +41,8 @@
            " -v                      show version and exit\n"\
            " -h                      show help and exit\n")
 
+#define TCP_TYPE_GEN 1
+#define TCP_TYPE_SSL 2
 #define UDP_HASH_PRE 100
 #define UDP_HASH_LEN 500
 #define UDP_RAW_BUFSIZ 1472
@@ -73,6 +75,7 @@ typedef struct {
     char                addr[16];
     char                port[6];
     struct bufferevent *bev;
+    char                type;
 } TCPArg;
 
 typedef struct {
@@ -463,6 +466,7 @@ int main(int argc, char *argv[]) {
     return 0;
 }
 
+// 0->tcponly 1->tcp&udp 2->udponly
 void *service(void *arg) {
     char ctime[36] = {0};
     char error[64] = {0};
@@ -583,11 +587,13 @@ void tcp_newconn_cb(struct evconnlistener *listener, int sock, struct sockaddr *
     strcpy(clntarg->addr, inet_ntoa(destaddr.sin_addr));
     sprintf(clntarg->port, "%d", ntohs(destaddr.sin_port));
     clntarg->bev = destbev;
+    clntarg->type = TCP_TYPE_GEN;
     
     TCPArg *destarg = calloc(1, sizeof(TCPArg));
     strcpy(destarg->addr, inet_ntoa(destaddr.sin_addr));
     sprintf(destarg->port, "%d", ntohs(destaddr.sin_port));
     destarg->bev = clntbev;
+    destarg->type = TCP_TYPE_SSL;
     
     bufferevent_setcb(clntbev, NULL, NULL, tcp_sendreq_cb, clntarg);
     bufferevent_setcb(destbev, NULL, NULL, tcp_sendreq_cb, destarg);
@@ -646,7 +652,7 @@ void tcp_sendreq_cb(struct bufferevent *bev, short events, void *arg) {
         getpeername(bufferevent_getfd(bev),          (struct sockaddr *)&thisaddr, &addrlen);
         getpeername(bufferevent_getfd(thisarg->bev), (struct sockaddr *)&othraddr, &addrlen);
 
-        if (memcmp(&thisaddr, &servaddr, addrlen) == 0) {
+        if (thisarg->type == TCP_TYPE_SSL) {
             printf("%s [tcp] closed connect: %s:%d\n", loginf(ctime), servhost, servport);
             printf("%s [tcp] closed connect: %s:%d\n", loginf(ctime), inet_ntoa(othraddr.sin_addr), ntohs(othraddr.sin_port));
             SSL *ssl = bufferevent_openssl_get_ssl(bev);

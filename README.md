@@ -54,7 +54,7 @@ cd /tmp
 git clone https://github.com/libevent/libevent libevent-sources
 cd libevent-sources
 ./autogen.sh
-./configure --prefix=/tmp/libevent --enable-shared=no --enable-static=yes --disable-samples --disable-debug-mode --disable-malloc-replacement CPPFLAGS='-I/tmp/openssl/include' LDFLAGS='-L/tmp/openssl/lib' LIBS='-ldl -lssl -lcrypto'
+./configure --prefix=/tmp/libevent --enable-shared=no --enable-static=yes --disable-samples --disable-debug-mode --disable-malloc-replacement CPPFLAGS='-I/tmp/openssl/include' LDFLAGS='-L/tmp/openssl/lib' LIBS='-lssl -lcrypto -ldl'
 make && make install
 
 # tls-proxy
@@ -103,7 +103,7 @@ cd /tmp
 git clone https://github.com/libevent/libevent libevent-sources
 cd libevent-sources
 ./autogen.sh
-./configure --host=$ARCH --prefix=/tmp/libevent --enable-shared=no --enable-static=yes --disable-samples --disable-debug-mode --disable-malloc-replacement CPPFLAGS='-I/tmp/openssl/include' LDFLAGS='-L/tmp/openssl/lib' LIBS='-ldl -lssl -lcrypto'
+./configure --host=$ARCH --prefix=/tmp/libevent --enable-shared=no --enable-static=yes --disable-samples --disable-debug-mode --disable-malloc-replacement CPPFLAGS='-I/tmp/openssl/include' LDFLAGS='-L/tmp/openssl/lib' LIBS='-lssl -lcrypto -ldl'
 make && make install
 
 # tls-proxy
@@ -143,7 +143,7 @@ cd /tmp
 git clone https://github.com/libevent/libevent libevent-sources
 cd libevent-sources
 ./autogen.sh
-./configure --host=$ARCH --prefix=/tmp/libevent --enable-shared=no --enable-static=yes --disable-samples --disable-debug-mode --disable-malloc-replacement CPPFLAGS='-I/tmp/openssl/include' LDFLAGS='-L/tmp/openssl/lib' LIBS='-ldl -lssl -lcrypto'
+./configure --host=$ARCH --prefix=/tmp/libevent --enable-shared=no --enable-static=yes --disable-samples --disable-debug-mode --disable-malloc-replacement CPPFLAGS='-I/tmp/openssl/include' LDFLAGS='-L/tmp/openssl/lib' LIBS='-lssl -lcrypto -ldl'
 make && make install
 
 # tls-proxy

@@ -322,5 +322,5 @@ esac
 本机的 DNS 需要修改为 `8.8.8.8`、`8.8.4.4` 等国外 DNS 服务器（`/etc/resolv.conf`），然后 `curl ip.cn` 测试吧。
 
 **查看 tls-proxy 的日志**
-- `tls-client`：执行命令 `journalctl -fu tls-client.service`
-- `tls-server`：执行命令 `journalctl -fu tls-server.service`
+- `tls-client`：执行命令 `journalctl -afu tls-client.service`
+- `tls-server`：执行命令 `journalctl -afu tls-server.service`

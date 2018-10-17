@@ -278,6 +278,7 @@ void setsockopt_tcp(int sock) {
 
 int main(int argc, char *argv[]) {
     signal(SIGPIPE, SIG_IGN);
+    setvbuf(stdout, NULL, _IONBF, 0);
 
     char *requri = NULL;
     char *reqext = NULL;

@@ -207,6 +207,7 @@ void setsockopt_tcp(int sock) {
 
 int main(int argc, char *argv[]) {
     signal(SIGPIPE, SIG_IGN);
+    setvbuf(stdout, NULL, _IONBF, 0);
 
     char *listen_addr = "127.0.0.1";
     int   listen_port = 60080;

@@ -261,39 +261,7 @@ void setsockopt_tcp(int sock) {
         printf("%s [tcp] setsockopt(SO_KEEPALIVE) for %d: (%d) %s\n", logerr(ctime), sock, errno, strerror_r(errno, error, 64));
     }
 
-    optval = 15;
-    if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPIDLE, &optval, sizeof(optval)) == -1) {
-        printf("%s [tcp] setsockopt(TCP_KEEPIDLE) for %d: (%d) %s\n", logerr(ctime), sock, errno, strerror_r(errno, error, 64));
-    }
-
-    if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPINTVL, &optval, sizeof(optval)) == -1) {
-        printf("%s [tcp] setsockopt(TCP_KEEPINTVL) for %d: (%d) %s\n", logerr(ctime), sock, errno, strerror_r(errno, error, 64));
-    }
-
-    optval = 2;
-    if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPCNT, &optval, sizeof(optval)) == -1) {
-        printf("%s [tcp] setsockopt(TCP_KEEPCNT) for %d: (%d) %s\n", logerr(ctime), sock, errno, strerror_r(errno, error, 64));
-    }
-}
-
-void setsockopt_udp(int sock) {
-    char ctime[36] = {0};
-    char error[64] = {0};
-
-    int optval = 1;
-    if (setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &optval, sizeof(optval)) == -1) {
-        printf("%s [tcp] setsockopt(TCP_NODELAY) for %d: (%d) %s\n", logerr(ctime), sock, errno, strerror_r(errno, error, 64));
-    }
-
-    if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval)) == -1) {
-        printf("%s [tcp] setsockopt(SO_REUSEADDR) for %d: (%d) %s\n", logerr(ctime), sock, errno, strerror_r(errno, error, 64));
-    }
-
-    if (setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, &optval, sizeof(optval)) == -1) {
-        printf("%s [tcp] setsockopt(SO_KEEPALIVE) for %d: (%d) %s\n", logerr(ctime), sock, errno, strerror_r(errno, error, 64));
-    }
-
-    optval = 3;
+    optval = 30;
     if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPIDLE, &optval, sizeof(optval)) == -1) {
         printf("%s [tcp] setsockopt(TCP_KEEPIDLE) for %d: (%d) %s\n", logerr(ctime), sock, errno, strerror_r(errno, error, 64));
     }
@@ -572,7 +540,7 @@ void *service(void *arg) {
         bufferevent_setwatermark(udpbev, EV_READ, 0, BUFSIZ_FOR_BEV);
         printf("%s [udp] connecting to %s:%d\n", loginf(ctime), servhost, servport);
         bufferevent_socket_connect(udpbev, (struct sockaddr *)&servaddr, sizeof(servaddr));
-        setsockopt_udp(bufferevent_getfd(udpbev));
+        setsockopt_tcp(bufferevent_getfd(udpbev));
     }
 
     event_base_dispatch(base);
@@ -843,7 +811,7 @@ void udp_sendreq_cb(struct bufferevent *bev, short events, void *arg) {
         bufferevent_setwatermark(udpbev, EV_READ, 0, BUFSIZ_FOR_BEV);
         printf("%s [udp] connecting to %s:%d\n", loginf(ctime), servhost, servport);
         bufferevent_socket_connect(udpbev, (struct sockaddr *)&servaddr, sizeof(servaddr));
-        setsockopt_udp(bufferevent_getfd(udpbev));
+        setsockopt_tcp(bufferevent_getfd(udpbev));
     }
 }
 
@@ -879,7 +847,7 @@ void udp_recvres_cb(struct bufferevent *bev, void *arg) {
         bufferevent_setwatermark(udpbev, EV_READ, 0, BUFSIZ_FOR_BEV);
         printf("%s [udp] connecting to %s:%d\n", loginf(ctime), servhost, servport);
         bufferevent_socket_connect(udpbev, (struct sockaddr *)&servaddr, sizeof(servaddr));
-        setsockopt_udp(bufferevent_getfd(udpbev));
+        setsockopt_tcp(bufferevent_getfd(udpbev));
         return;
     }
     free(statusline);

@@ -43,7 +43,7 @@
 
 #define TCP_TYPE_GEN 1
 #define TCP_TYPE_SSL 2
-#define UDP_HASH_PRE 100
+#define UDP_HASH_PRE 50
 #define UDP_HASH_LEN 500
 #define UDP_RAW_BUFSIZ 1472
 #define UDP_ENC_BUFSIZ 1960
@@ -53,15 +53,15 @@
 
 void *service(void *arg);
 
-void tcp_newconn_cb(struct evconnlistener *listener, int sock, struct sockaddr *addr, int addrlen, void *arg);
-void tcp_sendreq_cb(struct bufferevent *bev, short events, void *arg);
-void tcp_recvres_cb(struct bufferevent *bev, void *arg);
-void tcp_forward_cb(struct bufferevent *bev, void *arg);
-void tcp_overbuf_cb(struct bufferevent *bev, void *arg);
+void tcp_read_cb(struct bufferevent *bev, void *arg);
+void tcp_write_cb(struct bufferevent *bev, void *arg);
+void tcp_events_cb(struct bufferevent *bev, short events, void *arg);
 void tcp_timeout_cb(int sock, short events, void *arg);
+void tcp_recvres_cb(struct bufferevent *bev, void *arg);
+void tcp_newconn_cb(struct evconnlistener *listener, int sock, struct sockaddr *addr, int addrlen, void *arg);
 
-void udp_events_cb(struct bufferevent *bev, short events, void *arg);
-void udp_estabed_cb(struct bufferevent *bev, void *arg);
+void udp_sendreq_cb(struct bufferevent *bev, short events, void *arg);
+void udp_recvres_cb(struct bufferevent *bev, void *arg);
 void udp_timeout_cb(int sock, short events, void *arg);
 void udp_request_cb(int sock, short events, void *arg);
 void udp_response_cb(struct bufferevent *bev, void *arg);
@@ -467,7 +467,9 @@ int main(int argc, char *argv[]) {
     return 0;
 }
 
-// 0->tcponly 1->tcp&udp 2->udponly
+// arg = 0 -> tcponly
+// arg = 1 -> tcp&udp
+// arg = 2 -> udponly
 void *service(void *arg) {
     char ctime[36] = {0};
     char error[64] = {0};
@@ -533,7 +535,7 @@ void *service(void *arg) {
         if (get_ssl_sess() != NULL) SSL_set_session(ssl, get_ssl_sess());
 
         udpbev = bufferevent_openssl_socket_new(base, -1, ssl, BUFFEREVENT_SSL_CONNECTING, BEV_OPT_CLOSE_ON_FREE);
-        bufferevent_setcb(udpbev, NULL, NULL, udp_events_cb, NULL);
+        bufferevent_setcb(udpbev, NULL, NULL, udp_sendreq_cb, NULL);
         bufferevent_enable(udpbev, EV_READ | EV_WRITE);
         bufferevent_setwatermark(udpbev, EV_READ, 0, BUFSIZ_FOR_BEV);
         printf("%s [udp] connecting to %s:%d\n", loginf(ctime), servhost, servport);
@@ -596,8 +598,8 @@ void tcp_newconn_cb(struct evconnlistener *listener, int sock, struct sockaddr *
     destarg->bev = clntbev;
     destarg->type = TCP_TYPE_SSL;
     
-    bufferevent_setcb(clntbev, NULL, NULL, tcp_sendreq_cb, clntarg);
-    bufferevent_setcb(destbev, NULL, NULL, tcp_sendreq_cb, destarg);
+    bufferevent_setcb(clntbev, NULL, NULL, tcp_events_cb, clntarg);
+    bufferevent_setcb(destbev, NULL, NULL, tcp_events_cb, destarg);
 
     bufferevent_enable(clntbev, EV_WRITE);
     bufferevent_enable(destbev, EV_READ | EV_WRITE);
@@ -610,7 +612,7 @@ void tcp_newconn_cb(struct evconnlistener *listener, int sock, struct sockaddr *
     setsockopt_tcp(bufferevent_getfd(destbev));
 }
 
-void tcp_sendreq_cb(struct bufferevent *bev, short events, void *arg) {
+void tcp_events_cb(struct bufferevent *bev, short events, void *arg) {
     (void) bev; (void) events; (void) arg;
 
     char ctime[36] = {0};
@@ -626,7 +628,7 @@ void tcp_sendreq_cb(struct bufferevent *bev, short events, void *arg) {
         bufferevent_write(bev, "; port=", strlen("; port="));
         bufferevent_write(bev, thisarg->port, strlen(thisarg->port));
         bufferevent_write(bev, "\r\n\r\n", 4);
-        bufferevent_setcb(bev, tcp_recvres_cb, NULL, tcp_sendreq_cb, arg);
+        bufferevent_setcb(bev, tcp_recvres_cb, NULL, tcp_events_cb, arg);
 
         if (get_ssl_sess() != NULL) SSL_SESSION_free(get_ssl_sess());
         set_ssl_sess(SSL_get1_session(bufferevent_openssl_get_ssl(bev)));
@@ -722,15 +724,15 @@ void tcp_recvres_cb(struct bufferevent *bev, void *arg) {
 
     free(statusline);
     printf("%s [tcp] %s:%d <-> %s:%s\n", loginf(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port), thisarg->addr, thisarg->port);
-    bufferevent_setcb(bev, tcp_forward_cb, NULL, tcp_sendreq_cb, arg);
+    bufferevent_setcb(bev, tcp_read_cb, NULL, tcp_events_cb, arg);
 
     TCPArg *othrarg = NULL;
     bufferevent_getcb(thisarg->bev, NULL, NULL, NULL, (void **)&othrarg);
-    bufferevent_setcb(thisarg->bev, tcp_forward_cb, NULL, tcp_sendreq_cb, othrarg);
+    bufferevent_setcb(thisarg->bev, tcp_read_cb, NULL, tcp_events_cb, othrarg);
     bufferevent_enable(thisarg->bev, EV_READ);
 }
 
-void tcp_forward_cb(struct bufferevent *bev, void *arg) {
+void tcp_read_cb(struct bufferevent *bev, void *arg) {
     TCPArg *thisarg = arg;
     struct evbuffer *input = bufferevent_get_input(bev);
     struct evbuffer *output = bufferevent_get_output(thisarg->bev);
@@ -740,15 +742,15 @@ void tcp_forward_cb(struct bufferevent *bev, void *arg) {
         bufferevent_getcb(thisarg->bev, NULL, NULL, NULL, (void **)&othrarg);
         bufferevent_disable(bev, EV_READ);
         bufferevent_setwatermark(thisarg->bev, EV_WRITE, BUFSIZ_FOR_BEV / 2, 0);
-        bufferevent_setcb(thisarg->bev, tcp_forward_cb, tcp_overbuf_cb, tcp_sendreq_cb, othrarg);
+        bufferevent_setcb(thisarg->bev, tcp_read_cb, tcp_write_cb, tcp_events_cb, othrarg);
     }
 }
 
-void tcp_overbuf_cb(struct bufferevent *bev, void *arg) {
+void tcp_write_cb(struct bufferevent *bev, void *arg) {
     TCPArg *thisarg = arg;
     bufferevent_enable(thisarg->bev, EV_READ);
     bufferevent_setwatermark(bev, EV_WRITE, 0, 0);
-    bufferevent_setcb(bev, tcp_forward_cb, NULL, tcp_sendreq_cb, arg);
+    bufferevent_setcb(bev, tcp_read_cb, NULL, tcp_events_cb, arg);
 }
 
 void tcp_timeout_cb(int sock, short events, void *arg) {
@@ -759,7 +761,7 @@ void tcp_timeout_cb(int sock, short events, void *arg) {
     free(evarg);
 }
 
-void udp_events_cb(struct bufferevent *bev, short events, void *arg) {
+void udp_sendreq_cb(struct bufferevent *bev, short events, void *arg) {
     (void) bev; (void) events; (void) arg;
     char ctime[36] = {0};
 
@@ -769,7 +771,7 @@ void udp_events_cb(struct bufferevent *bev, short events, void *arg) {
 
         bufferevent_write(bev, servreq, strlen(servreq));
         bufferevent_write(bev, "ConnectionType: udp\r\n\r\n", strlen("ConnectionType: udp\r\n\r\n"));
-        bufferevent_setcb(bev, udp_estabed_cb, NULL, udp_events_cb, NULL);
+        bufferevent_setcb(bev, udp_recvres_cb, NULL, udp_sendreq_cb, NULL);
 
         if (get_ssl_sess() != NULL) SSL_SESSION_free(get_ssl_sess());
         set_ssl_sess(SSL_get1_session(bufferevent_openssl_get_ssl(bev)));
@@ -793,8 +795,9 @@ void udp_events_cb(struct bufferevent *bev, short events, void *arg) {
         SSL *ssl = bufferevent_openssl_get_ssl(bev);
         SSL_set_shutdown(ssl, SSL_RECEIVED_SHUTDOWN);
         SSL_shutdown(ssl);
-        bufferevent_free(bev);
+
         udpnode_clear();
+        bufferevent_free(bev);
         if (event_pending(udplev, EV_READ, NULL)) event_del(udplev);
 
         ssl = SSL_new(get_ssl_ctx());
@@ -803,7 +806,7 @@ void udp_events_cb(struct bufferevent *bev, short events, void *arg) {
         if (get_ssl_sess() != NULL) SSL_set_session(ssl, get_ssl_sess());
 
         udpbev = bufferevent_openssl_socket_new(udpbase, -1, ssl, BUFFEREVENT_SSL_CONNECTING, BEV_OPT_CLOSE_ON_FREE);
-        bufferevent_setcb(udpbev, NULL, NULL, udp_events_cb, NULL);
+        bufferevent_setcb(udpbev, NULL, NULL, udp_sendreq_cb, NULL);
         bufferevent_enable(udpbev, EV_READ | EV_WRITE);
         bufferevent_setwatermark(udpbev, EV_READ, 0, BUFSIZ_FOR_BEV);
         printf("%s [udp] connecting to %s:%d\n", loginf(ctime), servhost, servport);
@@ -812,7 +815,7 @@ void udp_events_cb(struct bufferevent *bev, short events, void *arg) {
     }
 }
 
-void udp_estabed_cb(struct bufferevent *bev, void *arg) {
+void udp_recvres_cb(struct bufferevent *bev, void *arg) {
     (void) arg;
     char ctime[36] = {0};
 
@@ -839,7 +842,7 @@ void udp_estabed_cb(struct bufferevent *bev, void *arg) {
         if (get_ssl_sess() != NULL) SSL_set_session(ssl, get_ssl_sess());
 
         udpbev = bufferevent_openssl_socket_new(udpbase, -1, ssl, BUFFEREVENT_SSL_CONNECTING, BEV_OPT_CLOSE_ON_FREE);
-        bufferevent_setcb(udpbev, NULL, NULL, udp_events_cb, NULL);
+        bufferevent_setcb(udpbev, NULL, NULL, udp_sendreq_cb, NULL);
         bufferevent_enable(udpbev, EV_READ | EV_WRITE);
         bufferevent_setwatermark(udpbev, EV_READ, 0, BUFSIZ_FOR_BEV);
         printf("%s [udp] connecting to %s:%d\n", loginf(ctime), servhost, servport);
@@ -855,7 +858,7 @@ void udp_estabed_cb(struct bufferevent *bev, void *arg) {
     printf("%s [udp] %s:%d <-> %s:%d\n", loginf(ctime), inet_ntoa(selfaddr.sin_addr), ntohs(selfaddr.sin_port), servhost, servport);
 
     event_add(udplev, NULL);
-    bufferevent_setcb(bev, udp_response_cb, NULL, udp_events_cb, NULL);
+    bufferevent_setcb(bev, udp_response_cb, NULL, udp_sendreq_cb, NULL);
 }
 
 void udp_request_cb(int sock, short events, void *arg) {
@@ -937,7 +940,7 @@ void udp_response_cb(struct bufferevent *bev, void *arg) {
         if (colon_cnt != 5 || strlen(response) < 23) {
             printf("%s [udp] bad response: %s:%d\n", logerr(ctime), servhost, servport);
             free(response);
-            return;
+            continue;
         }
 
         char *iaddrptr = response;
@@ -950,79 +953,79 @@ void udp_response_cb(struct bufferevent *bev, void *arg) {
         if (strlen(iaddrptr) < 7 || strlen(iaddrptr) > 15) {
             printf("%s [udp] bad response: %s:%d\n", logerr(ctime), servhost, servport);
             free(response);
-            return;
+            continue;
         }
 
         if (strlen(iportptr) < 1 || strlen(iportptr) > 5) {
             printf("%s [udp] bad response: %s:%d\n", logerr(ctime), servhost, servport);
             free(response);
-            return;
+            continue;
         }
 
         if (strlen(raddrptr) < 7 || strlen(raddrptr) > 15) {
             printf("%s [udp] bad response: %s:%d\n", logerr(ctime), servhost, servport);
             free(response);
-            return;
+            continue;
         }
 
         if (strlen(rportptr) < 1 || strlen(rportptr) > 5) {
             printf("%s [udp] bad response: %s:%d\n", logerr(ctime), servhost, servport);
             free(response);
-            return;
+            continue;
         }
 
         if (strlen(eportptr) < 1 || strlen(eportptr) > 5) {
             printf("%s [udp] bad response: %s:%d\n", logerr(ctime), servhost, servport);
             free(response);
-            return;
+            continue;
         }
 
         if (strlen(edataptr) < 1) {
             printf("%s [udp] bad response: %s:%d\n", logerr(ctime), servhost, servport);
             free(response);
-            return;
+            continue;
         }
 
         uint32_t iaddr = inet_addr(iaddrptr);
         if (iaddr == INADDR_NONE) {
             printf("%s [udp] bad response: %s:%d\n", logerr(ctime), servhost, servport);
             free(response);
-            return;
+            continue;
         }
 
         uint16_t iport = htons(strtol(iportptr, NULL, 10));
         if (iport == 0) {
             printf("%s [udp] bad response: %s:%d\n", logerr(ctime), servhost, servport);
             free(response);
-            return;
+            continue;
         }
 
         uint32_t raddr = inet_addr(raddrptr);
         if (raddr == INADDR_NONE) {
             printf("%s [udp] bad response: %s:%d\n", logerr(ctime), servhost, servport);
             free(response);
-            return;
+            continue;
         }
 
         uint16_t rport = htons(strtol(rportptr, NULL, 10));
         if (rport == 0) {
             printf("%s [udp] bad response: %s:%d\n", logerr(ctime), servhost, servport);
             free(response);
-            return;
+            continue;
         }
 
         int eport = strtol(eportptr, NULL, 10);
         if (eport <= 0 || eport > 65535) {
             printf("%s [udp] bad response: %s:%d\n", logerr(ctime), servhost, servport);
             free(response);
-            return;
+            continue;
         }
 
         size_t rawlen = 0;
         if (base64_decode(edataptr, strlen(edataptr), udprbuff, &rawlen, 0) != 1) {
             printf("%s [udp] bad response: %s:%d\n", logerr(ctime), servhost, servport);
             free(response);
-            return;
+            continue;
         }
         printf("%s [udp] recv %ld bytes data from %s:%s\n", loginf(ctime), rawlen, raddrptr, rportptr);
 
@@ -1050,7 +1053,7 @@ void udp_response_cb(struct bufferevent *bev, void *arg) {
             printf("%s [udp] bind socket: (%d) %s\n", logerr(ctime), errno, strerror_r(errno, error, 64));
             close(destsock);
             free(response);
-            return;
+            continue;
         }
 
         if (sendto(destsock, udprbuff, rawlen, 0, (struct sockaddr *)&clntaddr, sizeof(clntaddr)) == -1) {
@@ -1058,7 +1061,7 @@ void udp_response_cb(struct bufferevent *bev, void *arg) {
             printf("%s [udp] sendto socket: (%d) %s\n", logerr(ctime), errno, strerror_r(errno, error, 64));
             close(destsock);
             free(response);
-            return;
+            continue;
         }
 
         printf("%s [udp] send %ld bytes data to %s\n", loginf(ctime), rawlen, iaddrptr);

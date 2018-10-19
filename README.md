@@ -221,8 +221,10 @@ server {
         if ($http_some_header != 'some_header_value') {
             return 404;
         }
-        proxy_read_timeout 30d;
         proxy_http_version 1.1;
+        proxy_read_timeout 3650d;
+        proxy_send_timeout 3650d;
+        proxy_connect_timeout 3s;
         proxy_pass http://127.0.0.1:60080;
         proxy_set_header Connection "Upgrade";
         proxy_set_header Upgrade $http_upgrade;

@@ -205,6 +205,20 @@ void setsockopt_tcp(int sock) {
     }
 }
 
+void setsockopt_udp(int sock) {
+    char ctime[36] = {0};
+    char error[64] = {0};
+
+    int optval = 3;
+    if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPIDLE, &optval, sizeof(optval)) == -1) {
+        printf("%s [tcp] setsockopt(TCP_KEEPIDLE) for %d: (%d) %s\n", logerr(ctime), sock, errno, strerror_r(errno, error, 64));
+    }
+
+    if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPINTVL, &optval, sizeof(optval)) == -1) {
+        printf("%s [tcp] setsockopt(TCP_KEEPINTVL) for %d: (%d) %s\n", logerr(ctime), sock, errno, strerror_r(errno, error, 64));
+    }
+}
+
 int main(int argc, char *argv[]) {
     signal(SIGPIPE, SIG_IGN);
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -370,10 +384,11 @@ void new_fstreq_cb(struct bufferevent *bev, void *arg) {
             strncpy(type, header, 3);
 
             if (strcmp(type, "udp") == 0) {
-                free(reqline);
                 printf("%s [udp] new connect: %s:%d\n", loginf(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
                 bufferevent_write(bev, WEBSOCKET_RESPONSE, strlen(WEBSOCKET_RESPONSE));
                 bufferevent_setcb(bev, udp_request_cb, NULL, udp_events_cb, udpnode_init());
+                setsockopt_udp(bufferevent_getfd(bev));
+                free(reqline);
                 return;
             }
 

@@ -557,11 +557,8 @@ void udp_request_cb(struct bufferevent *bev, void *arg) {
 
         if (colon_cnt != 5 || strlen(request) < 23) {
             printf("%s [udp] bad request: %s:%d\n", logerr(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
-            printf("%s [udp] closed connect: %s:%d\n", loginf(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
-            bufferevent_free(bev);
-            udpnode_clear(arg);
             free(request);
-            return;
+            continue;
         }
 
         char *iaddrptr = request;
@@ -573,98 +570,68 @@ void udp_request_cb(struct bufferevent *bev, void *arg) {
 
         if (strlen(iaddrptr) < 7 || strlen(iaddrptr) > 15) {
             printf("%s [udp] bad request: %s:%d\n", logerr(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
-            printf("%s [udp] closed connect: %s:%d\n", loginf(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
-            bufferevent_free(bev);
-            udpnode_clear(arg);
             free(request);
-            return;
+            continue;
         }
 
         if (strlen(iportptr) < 1 || strlen(iportptr) > 5) {
             printf("%s [udp] bad request: %s:%d\n", logerr(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
-            printf("%s [udp] closed connect: %s:%d\n", loginf(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
-            bufferevent_free(bev);
-            udpnode_clear(arg);
             free(request);
-            return;
+            continue;
         }
 
         if (strlen(raddrptr) < 7 || strlen(raddrptr) > 15) {
             printf("%s [udp] bad request: %s:%d\n", logerr(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
-            printf("%s [udp] closed connect: %s:%d\n", loginf(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
-            bufferevent_free(bev);
-            udpnode_clear(arg);
             free(request);
-            return;
+            continue;
         }
 
         if (strlen(rportptr) < 1 || strlen(rportptr) > 5) {
             printf("%s [udp] bad request: %s:%d\n", logerr(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
-            printf("%s [udp] closed connect: %s:%d\n", loginf(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
-            bufferevent_free(bev);
-            udpnode_clear(arg);
             free(request);
-            return;
+            continue;
         }
 
         if (strlen(eportptr) < 1 || strlen(eportptr) > 5) {
             printf("%s [udp] bad request: %s:%d\n", logerr(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
-            printf("%s [udp] closed connect: %s:%d\n", loginf(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
-            bufferevent_free(bev);
-            udpnode_clear(arg);
             free(request);
-            return;
+            continue;
         }
 
         if (strlen(edataptr) < 1) {
             printf("%s [udp] bad request: %s:%d\n", logerr(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
-            printf("%s [udp] closed connect: %s:%d\n", loginf(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
-            bufferevent_free(bev);
-            udpnode_clear(arg);
             free(request);
-            return;
+            continue;
         }
 
         uint32_t raddr = inet_addr(raddrptr);
         if (raddr == INADDR_NONE) {
             printf("%s [udp] bad request: %s:%d\n", logerr(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
-            printf("%s [udp] closed connect: %s:%d\n", loginf(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
-            bufferevent_free(bev);
-            udpnode_clear(arg);
             free(request);
-            return;
+            continue;
         }
 
         uint16_t rport = htons(strtol(rportptr, NULL, 10));
         if (rport == 0) {
             printf("%s [udp] bad request: %s:%d\n", logerr(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
-            printf("%s [udp] closed connect: %s:%d\n", loginf(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
-            bufferevent_free(bev);
-            udpnode_clear(arg);
             free(request);
-            return;
+            continue;
         }
 
         int eport = strtol(eportptr, NULL, 10);
         if (eport < 0 || eport > 65535) {
             printf("%s [udp] bad request: %s:%d\n", logerr(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
-            printf("%s [udp] closed connect: %s:%d\n", loginf(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
-            bufferevent_free(bev);
-            udpnode_clear(arg);
             free(request);
-            return;
+            continue;
         }
 
         size_t rawlen = 0;
         void *rawbuf = malloc(strlen(edataptr));
         if (base64_decode(edataptr, strlen(edataptr), rawbuf, &rawlen, 0) != 1) {
             printf("%s [udp] bad request: %s:%d\n", logerr(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
-            printf("%s [udp] closed connect: %s:%d\n", loginf(ctime), inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
-            bufferevent_free(bev);
-            udpnode_clear(arg);
             free(request);
             free(rawbuf);
-            return;
+            continue;
         }
         printf("%s [udp] recv %ld bytes data from %s:%d\n", loginf(ctime), rawlen, inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
 

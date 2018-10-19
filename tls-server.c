@@ -33,7 +33,7 @@
 #define UDP_RAW_BUFSIZ 1472
 #define UDP_ENC_BUFSIZ 1960
 #define UDP_HASH_LEN 500
-#define UDP_HASH_PRE 100
+#define UDP_HASH_PRE 50
 
 static struct sockaddr_in servaddr;
 void *service(void *arg);
@@ -326,7 +326,7 @@ void new_events_cb(struct bufferevent *bev, short events, void *arg) {
     (void) bev; (void) events; (void) arg;
 
     char ctime[36] = {0};
-    struct sockaddr_in clntaddr;
+    struct sockaddr_in clntaddr = {0};
     socklen_t addrlen = sizeof(clntaddr);
     getpeername(bufferevent_getfd(bev), (struct sockaddr *)&clntaddr, &addrlen);
 
@@ -345,7 +345,7 @@ void new_fstreq_cb(struct bufferevent *bev, void *arg) {
     (void) bev; (void) arg;
 
     char ctime[36] = {0};
-    struct sockaddr_in clntaddr;
+    struct sockaddr_in clntaddr = {0};
     socklen_t addrlen = sizeof(clntaddr);
     getpeername(bufferevent_getfd(bev), (struct sockaddr *)&clntaddr, &addrlen);
 
@@ -442,6 +442,7 @@ void new_fstreq_cb(struct bufferevent *bev, void *arg) {
                 setsockopt_tcp(bufferevent_getfd(destbev));
 
                 bufferevent_setcb(bev, NULL, NULL, tcp_events_cb, destbev);
+                bufferevent_disable(bev, EV_READ);
                 free(reqline);
                 return;
             }
@@ -480,7 +481,7 @@ void tcp_write_cb(struct bufferevent *bev, void *arg) {
 
 void tcp_events_cb(struct bufferevent *bev, short events, void *arg) {
     char ctime[36] = {0};
-    struct sockaddr_in thisaddr;
+    struct sockaddr_in thisaddr = {0};
     socklen_t addrlen = sizeof(thisaddr);
     getpeername(bufferevent_getfd(bev), (struct sockaddr *)&thisaddr, &addrlen);
 
@@ -489,6 +490,7 @@ void tcp_events_cb(struct bufferevent *bev, short events, void *arg) {
         bufferevent_write(arg, WEBSOCKET_RESPONSE, strlen(WEBSOCKET_RESPONSE));
         bufferevent_setcb(bev, tcp_read_cb, NULL, tcp_events_cb, arg);
         bufferevent_setcb(arg, tcp_read_cb, NULL, tcp_events_cb, bev);
+        bufferevent_enable(arg, EV_READ);
         return;
     }
 
@@ -498,7 +500,7 @@ void tcp_events_cb(struct bufferevent *bev, short events, void *arg) {
     }
 
     if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR)) {
-        struct sockaddr_in othraddr;
+        struct sockaddr_in othraddr = {0};
         getpeername(bufferevent_getfd(arg), (struct sockaddr *)&othraddr, &addrlen);
         printf("%s [tcp] closed connect: %s:%d\n", loginf(ctime), inet_ntoa(thisaddr.sin_addr), ntohs(thisaddr.sin_port));
         printf("%s [tcp] closed connect: %s:%d\n", loginf(ctime), inet_ntoa(othraddr.sin_addr), ntohs(othraddr.sin_port));
@@ -523,7 +525,7 @@ void tcp_timeout_cb(int sock, short events, void *arg) {
 
 void udp_events_cb(struct bufferevent *bev, short events, void *arg) {
     char ctime[36] = {0};
-    struct sockaddr_in clntaddr;
+    struct sockaddr_in clntaddr = {0};
     socklen_t addrlen = sizeof(clntaddr);
     getpeername(bufferevent_getfd(bev), (struct sockaddr *)&clntaddr, &addrlen);
 
@@ -541,7 +543,7 @@ void udp_events_cb(struct bufferevent *bev, short events, void *arg) {
 
 void udp_request_cb(struct bufferevent *bev, void *arg) {
     char ctime[36] = {0};
-    struct sockaddr_in clntaddr;
+    struct sockaddr_in clntaddr = {0};
     socklen_t addrlen = sizeof(clntaddr);
     getpeername(bufferevent_getfd(bev), (struct sockaddr *)&clntaddr, &addrlen);
 
@@ -664,6 +666,7 @@ void udp_request_cb(struct bufferevent *bev, void *arg) {
             free(rawbuf);
             return;
         }
+        printf("%s [udp] recv %ld bytes data from %s:%d\n", loginf(ctime), rawlen, inet_ntoa(clntaddr.sin_addr), ntohs(clntaddr.sin_port));
 
         int esock = -1;
         if (eport != 0) {
@@ -740,19 +743,19 @@ void udp_response_cb(int sock, short events, void *arg) {
     struct sockaddr_in destaddr = {0};
     void *rawbuf = malloc(UDP_RAW_BUFSIZ);
     int rawlen = recvfrom(sock, rawbuf, UDP_RAW_BUFSIZ, 0, (struct sockaddr *)&destaddr, &addrlen);
-
     if (rawlen == -1) {
         char error[64] = {0};
         printf("%s [udp] recv udp data: (%d) %s\n", logerr(ctime), errno, strerror_r(errno, error, 64));
         free(rawbuf);
         return;
     }
+    printf("%s [udp] recv %d bytes data from %s:%d\n", loginf(ctime), rawlen, inet_ntoa(destaddr.sin_addr), ntohs(destaddr.sin_port));
 
     size_t enclen = 0;
     char *encbuf = malloc(UDP_ENC_BUFSIZ);
     base64_encode(rawbuf, rawlen, encbuf, &enclen, 0);
-    free(rawbuf);
     encbuf[enclen] = 0;
+    free(rawbuf);
 
     char raddr[16] = {0};
     char rport[6] = {0};

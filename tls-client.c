@@ -63,6 +63,7 @@ void tcp_newconn_cb(struct evconnlistener *listener, int sock, struct sockaddr *
 void udp_sendreq_cb(struct bufferevent *bev, short events, void *arg);
 void udp_recvres_cb(struct bufferevent *bev, void *arg);
 void udp_timeout_cb(int sock, short events, void *arg);
+void udp_release_cb(int sock, short events, void *arg);
 void udp_request_cb(int sock, short events, void *arg);
 void udp_response_cb(struct bufferevent *bev, void *arg);
 
@@ -529,6 +530,7 @@ void *service(void *arg) {
             exit(errno);
         }
 
+        udptev = event_new(base, -1, EV_TIMEOUT, udp_release_cb, NULL);
         udplev = event_new(base, udplsock, EV_READ | EV_PERSIST, udp_request_cb, NULL);
 
         SSL *ssl = SSL_new(ctx);
@@ -551,6 +553,7 @@ void *service(void *arg) {
         udpnode_clear();
         close(udplsock);
         event_free(udplev);
+        event_free(udptev);
         bufferevent_free(udpbev);
     }
 
@@ -803,6 +806,7 @@ void udp_sendreq_cb(struct bufferevent *bev, short events, void *arg) {
         udpnode_clear();
         bufferevent_free(bev);
         if (event_pending(udplev, EV_READ, NULL)) event_del(udplev);
+        if (event_pending(udptev, EV_TIMEOUT, NULL)) event_del(udptev);
 
         ssl = SSL_new(get_ssl_ctx());
         SSL_set_tlsext_host_name(ssl, servhost);
@@ -834,11 +838,12 @@ void udp_recvres_cb(struct bufferevent *bev, void *arg) {
 
         SSL *ssl = bufferevent_openssl_get_ssl(bev);
         SSL_set_shutdown(ssl, SSL_RECEIVED_SHUTDOWN);
-        SSL_shutdown(ssl);                           
+        SSL_shutdown(ssl);
 
         udpnode_clear();
         bufferevent_free(bev);
         if (event_pending(udplev, EV_READ, NULL)) event_del(udplev);
+        if (event_pending(udptev, EV_TIMEOUT, NULL)) event_del(udptev);
 
         ssl = SSL_new(get_ssl_ctx());
         SSL_set_tlsext_host_name(ssl, servhost);
@@ -861,6 +866,8 @@ void udp_recvres_cb(struct bufferevent *bev, void *arg) {
     getsockname(bufferevent_getfd(bev), (struct sockaddr *)&selfaddr, &addrlen);
     printf("%s [udp] %s:%d <-> %s:%d\n", loginf(ctime), inet_ntoa(selfaddr.sin_addr), ntohs(selfaddr.sin_port), servhost, servport);
 
+    struct timeval tv = {900, 0};
+    event_add(udptev, &tv);
     event_add(udplev, NULL);
     bufferevent_setcb(bev, udp_response_cb, NULL, udp_sendreq_cb, NULL);
 }
@@ -1072,6 +1079,35 @@ void udp_response_cb(struct bufferevent *bev, void *arg) {
         close(destsock);
         free(response);
     }
+}
+
+void udp_release_cb(int sock, short events, void *arg) {
+    (void) sock; (void) events; (void) arg;
+
+    char ctime[36] = {0};
+    printf("%s [udp] tunnel timeout: %s:%d\n", loginf(ctime), servhost, servport);
+    printf("%s [udp] closed connect: %s:%d\n", loginf(ctime), servhost, servport);
+
+    SSL *ssl = bufferevent_openssl_get_ssl(udpbev);
+    SSL_set_shutdown(ssl, SSL_RECEIVED_SHUTDOWN);
+    SSL_shutdown(ssl);
+
+    udpnode_clear();
+    bufferevent_free(udpbev);
+    if (event_pending(udplev, EV_READ, NULL)) event_del(udplev);
+
+    ssl = SSL_new(get_ssl_ctx());
+    SSL_set_tlsext_host_name(ssl, servhost);
+    X509_VERIFY_PARAM_set1_host(SSL_get0_param(ssl), servhost, 0);
+    if (get_ssl_sess() != NULL) SSL_set_session(ssl, get_ssl_sess());
+
+    udpbev = bufferevent_openssl_socket_new(udpbase, -1, ssl, BUFFEREVENT_SSL_CONNECTING, BEV_OPT_CLOSE_ON_FREE);
+    bufferevent_setcb(udpbev, NULL, NULL, udp_sendreq_cb, NULL);
+    bufferevent_enable(udpbev, EV_READ | EV_WRITE);
+    bufferevent_setwatermark(udpbev, EV_READ, 0, BUFSIZ_FOR_BEV);
+    printf("%s [udp] connecting to %s:%d\n", loginf(ctime), servhost, servport);
+    bufferevent_socket_connect(udpbev, (struct sockaddr *)&servaddr, sizeof(servaddr));
+    setsockopt_tcp(bufferevent_getfd(udpbev));
 }
 
 void udp_timeout_cb(int sock, short events, void *arg) {

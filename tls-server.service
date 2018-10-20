@@ -6,8 +6,7 @@ After=network.target
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/tls-server -j2
-Restart=on-failure
-RestartSec=3s
+Restart=always
 
 [Install]
 WantedBy=multi-user.target

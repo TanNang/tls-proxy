@@ -233,6 +233,32 @@ server {
 ```
 `/tls-proxy` 可以改为你喜欢的任意 URI；`tls-server` 默认监听地址为 `127.0.0.1:60080/tcp`；说明一下 `$http_some_header` 语句的作用：即使别人知道你的 URI，如果它没有设置正确的 HTTP 头部（在这里就是 `Some-Header` 咯，去掉开头的 `http_`，下划线换成连字符，大小写不敏感），并且对应的头部的值不是 `some_header_value`（这就相当于你的密码了，请任意发挥），那么还是白搭，Nginx 会返回 404 Not Found 给它（这种情况也适合于 GFW 的主动探测）。
 
+在上面的配置中，我们的自定义头部（为叙述方便，以下将自定义头部称为 **认证头部**、**密码头部**）只有一个 value（可以理解为只有一个密码），实际上我们可以为密码头部设置多个密码（即多个 value），假设我们的密码头部仍然为 `Some-Header`，现在我们需要为 tls-proxy 设置两个访问密码，一个是 `some_header_value_a`、一个是 `some_header_value_b`，则将上面的 `location /tls-proxy` 配置块改为：
+
+```nginx
+location /tls-proxy {
+    set $verified 0;
+    if ($http_some_header = 'some_header_value_a') {
+        set $verified 1;
+    }
+    if ($http_some_header = 'some_header_value_b') {
+        set $verified 1;
+    }
+    if ($verified != 1) {
+        return 404;
+    }
+    proxy_http_version 1.1;
+    proxy_read_timeout 3650d;
+    proxy_send_timeout 3650d;
+    proxy_connect_timeout 3s;
+    proxy_pass http://127.0.0.1:60080;
+    proxy_set_header Connection "Upgrade";
+    proxy_set_header Upgrade $http_upgrade;
+}
+```
+
+依此类推，如果想要设置三个访问密码，再添加一个类似的 `if ($http_some_header = 'some_header_value_c')` 语句即可。
+
 4、使用 `nginx -t` 检查配置文件是否有语法错误，然后 `systemctl reload nginx.service` 使其生效。
 
 **配置 tls-server**

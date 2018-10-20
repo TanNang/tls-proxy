@@ -69,6 +69,7 @@ void udp_response_cb(struct bufferevent *bev, void *arg);
 typedef struct {
     struct event       *ev;
     struct bufferevent *bev;
+    char                type;
 } EVArg;
 
 typedef struct {
@@ -664,9 +665,6 @@ void tcp_events_cb(struct bufferevent *bev, short events, void *arg) {
         } else {
             printf("%s [tcp] closed connect: %s:%d\n", loginf(ctime), inet_ntoa(thisaddr.sin_addr), ntohs(thisaddr.sin_port));
             printf("%s [tcp] closed connect: %s:%d\n", loginf(ctime), servhost, servport);
-            SSL *ssl = bufferevent_openssl_get_ssl(thisarg->bev);
-            SSL_set_shutdown(ssl, SSL_RECEIVED_SHUTDOWN);
-            SSL_shutdown(ssl);
         }
 
         TCPArg *othrarg = NULL;
@@ -677,7 +675,7 @@ void tcp_events_cb(struct bufferevent *bev, short events, void *arg) {
 
         EVArg *evarg = calloc(1, sizeof(EVArg));
         struct event *ev = event_new(bufferevent_get_base(thisarg->bev), -1, EV_TIMEOUT, tcp_timeout_cb, evarg);
-        evarg->ev = ev; evarg->bev = thisarg->bev;
+        evarg->ev = ev; evarg->bev = thisarg->bev; evarg->type = othrarg->type;
         struct timeval tv = {3, 0};
         event_add(ev, &tv);
 
@@ -756,6 +754,11 @@ void tcp_write_cb(struct bufferevent *bev, void *arg) {
 void tcp_timeout_cb(int sock, short events, void *arg) {
     (void) sock; (void) events;
     EVArg *evarg = arg;
+    if (evarg->type == TCP_TYPE_SSL) {
+        SSL *ssl = bufferevent_openssl_get_ssl(evarg->bev);
+        SSL_set_shutdown(ssl, SSL_RECEIVED_SHUTDOWN);
+        SSL_shutdown(ssl);
+    }
     bufferevent_free(evarg->bev);
     event_free(evarg->ev);
     free(evarg);

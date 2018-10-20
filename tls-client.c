@@ -43,7 +43,7 @@
 
 #define TCP_TYPE_GEN 1
 #define TCP_TYPE_SSL 2
-#define UDP_HASH_PRE 50
+#define UDP_HASH_PRE 10
 #define UDP_HASH_LEN 500
 #define UDP_RAW_BUFSIZ 1472
 #define UDP_ENC_BUFSIZ 1960
@@ -103,7 +103,7 @@ void udpnode_put(char *addr, int port) {
         strcpy(node->addr, addr);
         node->port = port;
         node->ev = event_new(udpbase, -1, EV_TIMEOUT, udp_timeout_cb, node->addr);
-        struct timeval tv = {120, 0};
+        struct timeval tv = {180, 0};
         event_add(node->ev, &tv);
         HASH_ADD_STR(udphash, addr, node);
         if (HASH_COUNT(udphash) > UDP_HASH_LEN) {
@@ -118,7 +118,7 @@ void udpnode_put(char *addr, int port) {
         }
     } else {
         node->port = port;
-        struct timeval tv = {120, 0};
+        struct timeval tv = {180, 0};
         event_add(node->ev, &tv);
         HASH_DEL(udphash, node);
         HASH_ADD_STR(udphash, addr, node);
@@ -129,7 +129,7 @@ UDPNode *udpnode_get(char *addr) {
     UDPNode *node = NULL;
     HASH_FIND_STR(udphash, addr, node);
     if (node == NULL) return node;
-    struct timeval tv = {120, 0};
+    struct timeval tv = {180, 0};
     event_add(node->ev, &tv);
     HASH_DEL(udphash, node);
     HASH_ADD_STR(udphash, addr, node);
@@ -270,7 +270,7 @@ void setsockopt_tcp(int sock) {
         printf("%s [tcp] setsockopt(TCP_KEEPINTVL) for %d: (%d) %s\n", logerr(ctime), sock, errno, strerror_r(errno, error, 64));
     }
 
-    optval = 2;
+    optval = 3;
     if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPCNT, &optval, sizeof(optval)) == -1) {
         printf("%s [tcp] setsockopt(TCP_KEEPCNT) for %d: (%d) %s\n", logerr(ctime), sock, errno, strerror_r(errno, error, 64));
     }
@@ -678,7 +678,7 @@ void tcp_events_cb(struct bufferevent *bev, short events, void *arg) {
         EVArg *evarg = calloc(1, sizeof(EVArg));
         struct event *ev = event_new(bufferevent_get_base(thisarg->bev), -1, EV_TIMEOUT, tcp_timeout_cb, evarg);
         evarg->ev = ev; evarg->bev = thisarg->bev;
-        struct timeval tv = {1, 0};
+        struct timeval tv = {3, 0};
         event_add(ev, &tv);
 
         free(thisarg);

@@ -33,7 +33,7 @@
 #define UDP_RAW_BUFSIZ 1472
 #define UDP_ENC_BUFSIZ 1960
 #define UDP_HASH_LEN 500
-#define UDP_HASH_PRE 50
+#define UDP_HASH_PRE 10
 
 static struct sockaddr_in servaddr;
 void *service(void *arg);
@@ -199,7 +199,7 @@ void setsockopt_tcp(int sock) {
         printf("%s [tcp] setsockopt(TCP_KEEPINTVL) for %d: (%d) %s\n", logerr(ctime), sock, errno, strerror_r(errno, error, 64));
     }
 
-    optval = 2;
+    optval = 3;
     if (setsockopt(sock, IPPROTO_TCP, TCP_KEEPCNT, &optval, sizeof(optval)) == -1) {
         printf("%s [tcp] setsockopt(TCP_KEEPCNT) for %d: (%d) %s\n", logerr(ctime), sock, errno, strerror_r(errno, error, 64));
     }
@@ -510,7 +510,7 @@ void tcp_events_cb(struct bufferevent *bev, short events, void *arg) {
         EVArg *evarg = calloc(1, sizeof(EVArg));
         struct event *ev = event_new(bufferevent_get_base(arg), -1, EV_TIMEOUT, tcp_timeout_cb, evarg);
         evarg->ev = ev; evarg->bev = arg;
-        struct timeval tv = {1, 0};
+        struct timeval tv = {3, 0};
         event_add(ev, &tv);
     }
 }
@@ -670,7 +670,7 @@ void udp_request_cb(struct bufferevent *bev, void *arg) {
             udparg->bev = bev;
 
             struct event *ev = event_new(bufferevent_get_base(bev), esock, EV_READ | EV_TIMEOUT | EV_PERSIST, udp_response_cb, udparg);
-            struct timeval tv = {120, 0};
+            struct timeval tv = {180, 0};
             event_add(ev, &tv);
 
             udpnode_put(arg, eport, ev);
